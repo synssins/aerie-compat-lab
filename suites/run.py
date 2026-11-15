@@ -543,6 +543,11 @@ def main():
                     diffs = [f"passes only vacuously: {needs} did not pass for {n}"]
             # ERROR only when no answer came back at all; an answer the client rejects is a FAIL with its status.
             row["cells"][n] = "PASS" if not diffs else "BLOCKED" if blocked else ("ERROR" if res["status"] is None else "FAIL")
+            ruled = scn_eval.get("ruled") or {}
+            if row["cells"][n] == "FAIL" and n in ruled.get("clients", []):
+                # A known exception the spec room ruled on: kept with its answer, counted apart from failures.
+                row["cells"][n] = "RULED"
+                diffs = [f"ruled {ruled['question']}: {ruled['why']}"] + diffs
             cells_by[(job["id"], n)] = row["cells"][n]
             if diffs:
                 body = res["body"].decode("utf-8", "replace") if isinstance(res["body"], bytes) else str(res["body"])
@@ -565,9 +570,10 @@ def write_matrix(out, suite, base, names, rows, notes, setup_errors):
     md += ["", "| Scenario | Operation | " + " | ".join(names) + " |", "|---|---|" + "---|" * len(names)]
     md += [f"| {r['scenario']} | `{r['op']}` | " + " | ".join(r["cells"][n] for n in names) + " |" for r in rows]
     cells = [c for r in rows for c in r["cells"].values()]
-    summary = {k: cells.count(k) for k in ("PASS", "FAIL", "BLOCKED", "ERROR", "N/A")}
+    summary = {k: cells.count(k) for k in ("PASS", "FAIL", "BLOCKED", "ERROR", "N/A", "RULED")}
     md += ["", "Totals: " + ", ".join(f"{k} {v}" for k, v in summary.items()),
-           "", "BLOCKED: the refusal case answered as expected, but its success case failed, so it proves nothing yet.",
+           "", "BLOCKED: the refusal case answered as expected, but its success case failed, so it proves nothing yet; or its setup failed.",
+           "RULED: the client rejects the answer, and a ruling in the contract release says it always will (the question is in the failure file).",
            "ERROR: no answer reached the client (transport or setup); a 2xx the client rejects is a FAIL.",
            "N/A: the operation is not in that spec version, or the case cannot be run yet (its note says why)."]
     (out / "matrix.md").write_text("\n".join(md) + "\n", encoding="utf-8")

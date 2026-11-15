@@ -6,4 +6,4 @@ dc-10.2.20,Data Center,10.2.20,https://dac-static.atlassian.com/server/confluenc
 dc-11.1.0,Data Center,11.1.0,https://dac-static.atlassian.com/server/confluence/11.1.0.swagger.v3.json,06497ea56915b443ad84e0f371774691a3dbe6dbf39f5855dac501ce965eda8b
 cloud-v1,Cloud,v1,https://dac-static.atlassian.com/cloud/confluence/swagger.v3.json,f80279e4beace901a20174044ff3dc1cf047ea9486c3dd6eff57e33e4161bf12
 cloud-v2,Cloud,v2,https://dac-static.atlassian.com/cloud/confluence/openapi-v2.v3.json,40535e2a2c01547d53d824d68299098c9073e5bf7ed98a71634706759becfa31
-aerie-dc-contracts-v3,aerie contract,contracts-v3,https://github.com/synssins/aerie-spec/releases/download/contracts-v3/contracts-v3.tar.gz#datacenter/openapi.yaml,af7bf2f65d94cbd710f0d180d6cc4eb533d199e3618cb5c07b9683837880ba4a,python
+aerie-dc-contracts-v4,aerie contract,contracts-v4,https://github.com/synssins/aerie-spec/releases/download/contracts-v4/contracts-v4.tar.gz#datacenter/openapi.yaml,3d3f6ab382417ba34af5c92410631be8ffca85c4a3e3a888f9ebf8d52104cf7e,python
