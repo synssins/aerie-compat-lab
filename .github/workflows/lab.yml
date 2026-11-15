@@ -1,0 +1,75 @@
+name: lab
+
+# Runs the lab against one aerie image and publishes the operation-by-client matrix.
+# Start it by hand with a tag, or from aerie's image build with
+#   repository_dispatch: {event_type: aerie-image, client_payload: {tag: sha-xxxxxxx}}
+on:
+  workflow_dispatch:
+    inputs:
+      aerie_tag:
+        description: "aerie image tag under test, e.g. sha-cd7b0e8"
+        required: true
+  repository_dispatch:
+    types: [aerie-image]
+
+permissions:
+  contents: read
+
+jobs:
+  datacenter-t1:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      AERIE_TAG: ${{ inputs.aerie_tag || github.event.client_payload.tag }}
+      AERIE_PORT: "8080"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Check the tag
+        run: |
+          [[ "$AERIE_TAG" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "invalid aerie tag: '$AERIE_TAG'"; exit 1; }
+
+      - name: Generate clients from the pinned specs
+        run: bash clients/generate.sh
+
+      - name: Install suite dependencies
+        run: |
+          pip install -r suites/requirements.txt
+          python -I suites/test_run.py
+
+      - name: Start aerie
+        run: docker compose -f harness/docker-compose.yml up -d
+
+      - name: Seed aerie
+        run: python -I harness/seed.py --out reports/harness.json
+
+      - name: Run datacenter/t1
+        run: python -I suites/run.py suites/datacenter/t1 --harness reports/harness.json --out reports/datacenter-t1
+
+      - name: Publish the matrix
+        if: always()
+        run: |
+          [ -f reports/datacenter-t1/matrix.md ] && cat reports/datacenter-t1/matrix.md >> "$GITHUB_STEP_SUMMARY" || true
+          docker compose -f harness/docker-compose.yml logs --no-color > reports/aerie.log 2>&1 || true
+          # Generated passwords only work inside the throwaway container, but keep them out of artifacts anyway.
+          [ -f reports/harness.json ] && python -I -c "import json,sys;p=sys.argv[1];d=json.load(open(p));[c.update(password='***') for c in d['credentials'].values()];json.dump(d,open(p,'w'),indent=2)" reports/harness.json || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: lab-reports-${{ env.AERIE_TAG }}
+          path: reports/
+          if-no-files-found: warn
+
+      - name: Stop aerie
+        if: always()
+        run: docker compose -f harness/docker-compose.yml down -v
