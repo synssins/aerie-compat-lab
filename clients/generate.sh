@@ -94,7 +94,11 @@ while IFS=, read -r id product version url sha langs; do
       # Cloud v1 has a cache-busting query parameter named "_", which the Python generator leaves without a name.
       python) props="$props,packageName=$pkg"; extra=(--parameter-name-mappings _=underscore_param) ;;
       # Models with both "links" and "_links" would get two fields named links.
+      # A schema without additionalProperties allows fields it does not list (OpenAPI's default), so the models
+      # do too: the vendor files list "links" but real servers send "_links" and "_expandable". Declared fields
+      # are still checked by type and requiredness.
       java) props="$props,invokerPackage=aerie.lab.$pkg,apiPackage=aerie.lab.$pkg.api,modelPackage=aerie.lab.$pkg.model,artifactId=$pkg"
+            props="$props,disallowAdditionalPropertiesIfNotPresent=false"
             extra=(--name-mappings _links=underscoreLinks) ;;
       # One request object per call, so the TypeScript runner passes parameters by name. A parameter named
       # "key" (DC 10.x+ watch operations) is shadowed by the generated loop variable of the same name.

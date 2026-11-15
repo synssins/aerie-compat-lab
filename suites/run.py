@@ -379,7 +379,7 @@ def resolve_fixtures(suite, handoff, base):
     behaviour/common.md, Identifiers). If even that fails the UUID itself is used, so the calls still name
     the right object."""
     found, notes = dict(handoff.get("ids", {})), []
-    admin = handoff["credentials"]["admin"]
+    admin = credential(handoff, suite.get("admin_as", "admin"))
     for name, how in suite.get("fixtures", {}).items():
         if name in found:
             continue
@@ -399,11 +399,11 @@ def resolve_fixtures(suite, handoff, base):
     return found, notes
 
 
-def run_step(base, handoff, step, fx):
+def run_step(base, handoff, step, fx, admin_as="admin"):
     """One setup step as raw HTTP; saves values from its answer into fx. Returns None, or why it failed."""
     method, path_tmpl = step["op"].split(" ", 1)
     try:
-        url, status, _, body = http_call(base, credential(handoff, step.get("as", "admin")), path_tmpl,
+        url, status, _, body = http_call(base, credential(handoff, step.get("as", admin_as)), path_tmpl,
                                          subst(step.get("path", {}), fx), subst(step.get("params", {}), fx), method,
                                          subst(step.get("body"), fx), subst(step.get("form"), fx))
     except Exception as e:
@@ -471,7 +471,7 @@ def main():
         for cx, n in enumerate(names):
             fx, setup_error = dict(fixtures, cx=cx), None
             for step in scn.get("setup", []):
-                setup_error = run_step(base, handoff, step, fx)
+                setup_error = run_step(base, handoff, step, fx, suite.get("admin_as", "admin"))
                 if setup_error:
                     break
             job = {"id": scn["id"], "method": method, "path_tmpl": path_tmpl, "cred": credential(handoff, scn["as"]),
