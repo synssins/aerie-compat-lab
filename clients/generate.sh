@@ -93,19 +93,32 @@ while IFS=, read -r id product version url sha langs; do
     case "$lang" in
       # Cloud v1 has a cache-busting query parameter named "_", which the Python generator leaves without a name.
       python) props="$props,packageName=$pkg"; extra=(--parameter-name-mappings _=underscore_param) ;;
-      # Models with both "links" and "_links" would get two fields named links. Cloud v2's
-      # DatabaseNullLookupValue declares enum: [null], which becomes an empty Java enum that does not compile.
+      # Models with both "links" and "_links" would get two fields named links.
       java) props="$props,invokerPackage=aerie.lab.$pkg,apiPackage=aerie.lab.$pkg.api,modelPackage=aerie.lab.$pkg.model,artifactId=$pkg"
-            extra=(--name-mappings _links=underscoreLinks --schema-mappings DatabaseNullLookupValue=com.google.gson.JsonElement) ;;
+            extra=(--name-mappings _links=underscoreLinks) ;;
       # One request object per call, so the TypeScript runner passes parameters by name. A parameter named
       # "key" (DC 10.x+ watch operations) is shadowed by the generated loop variable of the same name.
       typescript-axios) props="$props,npmName=$pkg,supportsES6=true,useSingleRequestParameter=true"
             extra=(--parameter-name-mappings key=keyParam) ;;
     esac
     log="$build/$lang-$id.log"
+    input="$spec"
+    if [ "$lang" = java ]; then
+      # Cloud v2 declares a property with enum: [null], which becomes an empty Java enum that does not
+      # compile; the Java client is generated from a copy without such enums (nullable stays).
+      input="$build/specs/$id.java.json"
+      python - "$spec" "$input" <<'PY'
+import json, sys
+def strip(o):
+    if isinstance(o, dict):
+        return {k: strip(v) for k, v in o.items() if not (k == "enum" and v == [None])}
+    return [strip(v) for v in o] if isinstance(o, list) else o
+json.dump(strip(json.load(open(sys.argv[1], encoding="utf-8"))), open(sys.argv[2], "w", encoding="utf-8"))
+PY
+    fi
     # The DC files declare some unused RestList* schemas as "type: array" with properties; without the
     # normalizer the Python generator writes models that do not compile.
-    if java -jar "$jar" generate -i "$spec" -g "$lang" -o "$out" --additional-properties="$props" \
+    if java -jar "$jar" generate -i "$input" -g "$lang" -o "$out" --additional-properties="$props" \
          --openapi-normalizer REMOVE_PROPERTIES_FROM_TYPE_OTHER_THAN_OBJECT=true "${extra[@]}" >"$log" 2>&1 \
        && build_client "$lang" "$out" "$pkg" >>"$log" 2>&1; then
       echo "   $lang ok"

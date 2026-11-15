@@ -9,6 +9,6 @@
 
 Atlassian updates these files in place. When a hash stops matching, record the new hash in a pull request after checking what changed; never generate from an unpinned file.
 
-Generator work-arounds: the Java clients map `_links` to `underscoreLinks` (models with both `links` and `_links` otherwise get two fields named `links`), Cloud v2's `DatabaseNullLookupValue` (declared `enum: [null]`) is mapped to a plain JSON element in Java, where it would be an empty enum that does not compile, and the TypeScript clients map a parameter named `key` to `keyParam` (Data Center 10.x and later; the generated loop variable shadows it).
+Generator work-arounds: the Java clients map `_links` to `underscoreLinks` (models with both `links` and `_links` otherwise get two fields named `links`), the Java clients are generated from a copy of the spec without `enum: [null]` (Cloud v2's `DatabaseNullLookupValue`; `nullable` stays), which would otherwise become an empty enum that does not compile, and the TypeScript clients map a parameter named `key` to `keyParam` (Data Center 10.x and later; the generated loop variable shadows it).
 
 `typescript-fetch` is not used: openapi-generator 7.26.0 crashes on the Cloud v2 file (model `DatabaseNullLookupValue`). The generator runs with the `REMOVE_PROPERTIES_FROM_TYPE_OTHER_THAN_OBJECT` normalizer because the Data Center files declare some unused `RestList*` schemas as arrays with properties, which the Python generator otherwise turns into code that does not compile.
