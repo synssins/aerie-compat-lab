@@ -1,19 +1,39 @@
-# Starts the aerie image for the commit under test.
-#   AERIE_TAG=sha-cd7b0e8 docker compose -f harness/docker-compose.yml up -d
-#   python -I harness/seed.py
-#   docker compose -f harness/docker-compose.yml down -v
-# The image declares no HEALTHCHECK, so seed.py waits for it from the host.
+# Starts the aerie image for the commit under test, as its own compose project "aerie-lab".
+#   AERIE_TAG=sha-cd7b0e8 docker compose -p aerie-lab -f harness/docker-compose.yml up -d aerie
+#   AERIE_SETUP_CODE="$(docker compose -p aerie-lab -f harness/docker-compose.yml exec -T aerie cat /app/App_Data/setup-code.txt)" python -I harness/seed.py
+#   docker compose -p aerie-lab -f harness/docker-compose.yml --profile runner down -v
+# The image declares no HEALTHCHECK, so seed.py waits for GET /api/v1/setup/status.
+# The "runner" service (profile runner) is the toolbox run-on-host.sh uses on a host without java or python deps.
 name: aerie-lab
 services:
   aerie:
     image: ghcr.io/synssins/aerie:${AERIE_TAG:?set AERIE_TAG to the image tag under test, e.g. sha-cd7b0e8}
     ports:
       - "${AERIE_PORT:-8080}:8080"
-    # GAP: the settings aerie needs to bootstrap a first administrator are not known to the lab.
-    # Put the settings the build room documents in harness/aerie.env (git-ignored).
+    # Optional settings for the image (git-ignored); seeding needs none.
     env_file:
       - path: aerie.env
         required: false
     volumes:
       # Anonymous volume over the image's data folder: every run starts empty; `down -v` removes it.
       - /app/App_Data
+
+  runner:
+    profiles: [runner]
+    image: aerie-lab-runner:local
+    build:
+      context: ../suites
+      dockerfile_inline: |
+        FROM python:3.12-slim-bookworm
+        RUN apt-get update && apt-get install -y --no-install-recommends openjdk-17-jre-headless curl ca-certificates \
+            && rm -rf /var/lib/apt/lists/*
+        COPY requirements.txt /tmp/requirements.txt
+        RUN pip install --no-cache-dir -r /tmp/requirements.txt
+    # Files written into the checkout stay owned by the user who runs the lab.
+    user: "${LAB_UID:-1000}:${LAB_GID:-1000}"
+    environment:
+      HOME: /tmp
+      AERIE_SETUP_CODE: ${AERIE_SETUP_CODE:-}
+    working_dir: /lab
+    volumes:
+      - ..:/lab

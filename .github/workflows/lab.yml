@@ -45,12 +45,15 @@ jobs:
         run: |
           pip install -r suites/requirements.txt
           python -I suites/test_run.py
+          python -I harness/test_seed.py
 
       - name: Start aerie
-        run: docker compose -f harness/docker-compose.yml up -d
+        run: docker compose -f harness/docker-compose.yml up -d aerie
 
       - name: Seed aerie
-        run: python -I harness/seed.py --out reports/harness.json
+        run: |
+          for _ in $(seq 1 90); do curl -sf -o /dev/null http://localhost:8080/api/v1/setup/status && break; sleep 2; done
+          AERIE_SETUP_CODE="$(docker compose -f harness/docker-compose.yml exec -T aerie cat /app/App_Data/setup-code.txt)"             python -I harness/seed.py --out reports/harness.json
 
       - name: Run datacenter/t1
         run: python -I suites/run.py suites/datacenter/t1 --harness reports/harness.json --out reports/datacenter-t1
@@ -60,8 +63,7 @@ jobs:
         run: |
           [ -f reports/datacenter-t1/matrix.md ] && cat reports/datacenter-t1/matrix.md >> "$GITHUB_STEP_SUMMARY" || true
           docker compose -f harness/docker-compose.yml logs --no-color > reports/aerie.log 2>&1 || true
-          # Generated passwords only work inside the throwaway container, but keep them out of artifacts anyway.
-          [ -f reports/harness.json ] && python -I -c "import json,sys;p=sys.argv[1];d=json.load(open(p));[c.update(password='***') for c in d['credentials'].values()];json.dump(d,open(p,'w'),indent=2)" reports/harness.json || true
+          python -I harness/redact.py reports/harness.json || true
 
       - uses: actions/upload-artifact@v4
         if: always()
