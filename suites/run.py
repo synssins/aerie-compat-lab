@@ -16,6 +16,8 @@ Exit code 1 when any cell is not PASS.
 import argparse
 import base64
 import importlib
+import inspect
+import uuid
 import json
 import os
 import re
@@ -33,6 +35,8 @@ RUNNERS = ROOT / "clients" / "runners"
 MISSING = object()
 NEGATIVE = {"not_allowed", "not_found", "invalid_cql"}
 INVALID_TOKEN = "kbt_lab_not_a_real_token"
+# Writes carry the XSRF header (contracts-v3, behaviour/common.md); harmless on reads and JSON writes.
+XSRF = {"X-Atlassian-Token": "no-check"}
 
 
 def get_path(doc, path):
@@ -94,23 +98,44 @@ def credential(handoff, who):
     return handoff["credentials"][who]
 
 
+def resolve(spec, p):
+    while isinstance(p, dict) and "$ref" in p:
+        p = get_path(spec, p["$ref"].lstrip("#/").replace("/", "."))
+    return p if isinstance(p, dict) else {}
+
+
 def operation(spec, method, path_tmpl):
-    """The spec's operation object for method + path, with path-level parameters merged and $refs resolved."""
+    """The spec's operation object for method + path, with path-level parameters merged and $refs resolved,
+    plus "form": the multipart field schemas when the request body is multipart/form-data."""
     item = spec.get("paths", {}).get(path_tmpl, {})
     op = item.get(method.lower())
     if not op:
         return None
-
-    def resolve(p):
-        while isinstance(p, dict) and "$ref" in p:
-            p = get_path(spec, p["$ref"].lstrip("#/").replace("/", "."))
-        return p if isinstance(p, dict) else {}
-
     params = {}
     for p in item.get("parameters", []) + op.get("parameters", []):
-        p = resolve(p)
+        p = resolve(spec, p)
         params[p.get("name")] = p
-    return dict(op, parameters=list(params.values()))
+    media = resolve(spec, op.get("requestBody")).get("content", {})
+    form = resolve(spec, (media.get("multipart/form-data") or {}).get("schema")).get("properties")
+    return dict(op, parameters=list(params.values()), form=form)
+
+
+def form_values(op, form):
+    """The scenario's multipart fields as this spec declares them. A file is {"__file__": name, "content",
+    "type"}; it stays a file only where the spec declares binary, otherwise the client gets its text, which is
+    all that spec's generated client can send. Fields the spec does not declare are not sent."""
+    out = {}
+    for k, v in (form or {}).items():
+        decl = (op.get("form") or {}).get(k)
+        if decl is None:
+            continue
+        item = decl.get("items", {}) if decl.get("type") == "array" else decl
+        binary = item.get("format") == "binary"
+        vals = [x if not isinstance(x, dict) or binary else x["content"] for x in (v if isinstance(v, list) else [v])]
+        if item.get("type") == "boolean":
+            vals = [x if isinstance(x, bool) else str(x).lower() == "true" for x in vals]
+        out[k] = vals if decl.get("type") == "array" else vals[0]
+    return out
 
 
 def typed_params(op, values):
@@ -137,9 +162,33 @@ def build_url(base, path_tmpl, path_params, params):
     return base + path + ("?" + query if query else "")
 
 
-def http_call(base, cred, path_tmpl, path_params, params):
+def multipart(form):
+    """multipart/form-data for form fields; a {"__file__": ...} value is a file part with its file name."""
+    boundary = "lab-" + uuid.uuid4().hex
+    out = b""
+    for k, v in form.items():
+        for x in v if isinstance(v, list) else [v]:
+            if isinstance(x, dict):
+                head = (f'Content-Disposition: form-data; name="{k}"; filename="{x["__file__"]}"\r\n'
+                        f'Content-Type: {x.get("type", "application/octet-stream")}')
+                data = x["content"].encode()
+            else:
+                head = f'Content-Disposition: form-data; name="{k}"'
+                data = (str(x).lower() if isinstance(x, bool) else str(x)).encode()
+            out += f"--{boundary}\r\n{head}\r\n\r\n".encode() + data + b"\r\n"
+    return out + f"--{boundary}--\r\n".encode(), "multipart/form-data; boundary=" + boundary
+
+
+def http_call(base, cred, path_tmpl, path_params, params, method="GET", body=None, form=None):
+    """Raw HTTP: a JSON body, or multipart form fields (files keep their file names), or neither."""
     url = build_url(base, path_tmpl, path_params, params)
-    req = urllib.request.Request(url, headers={"Authorization": auth_header(cred), "Accept": "application/json"})
+    headers = {"Authorization": auth_header(cred), "Accept": "application/json", **XSRF}
+    data = None
+    if form:
+        data, headers["Content-Type"] = multipart(form)
+    elif body is not None:
+        data, headers["Content-Type"] = json.dumps(body).encode(), "application/json"
+    req = urllib.request.Request(url, data=data, headers=headers, method=method)
     try:
         with urllib.request.urlopen(req, timeout=30) as r:
             return url, r.status, dict(r.headers), r.read()
@@ -154,7 +203,8 @@ class HttpClient:
         self.base = base
 
     def call(self, job):
-        url, status, headers, body = http_call(self.base, job["cred"], job["path_tmpl"], job["path_params"], job["params"])
+        url, status, headers, body = http_call(self.base, job["cred"], job["path_tmpl"], job["path_params"], job["params"],
+                                               job["method"], job.get("body"), job.get("form"))
         return {"url": url, "status": status, "headers": headers, "body": body, "client_error": None}
 
 
@@ -197,6 +247,8 @@ class PythonClient:
         client = self.pkg.ApiClient(self.pkg.Configuration(host=self.base))
         # The pinned specs declare no per-operation security, so the client would send no credentials.
         client.set_default_header("Authorization", auth_header(job["cred"]))
+        for k, v in XSRF.items():
+            client.set_default_header(k, v)
         # Keep the raw answer, so a 2xx the models reject is recorded with its status and body.
         seen = {}
         deserialize = client.response_deserialize
@@ -207,6 +259,18 @@ class PythonClient:
 
         client.response_deserialize = keep
         kwargs = {snake(k): v for k, v in typed_params(op, {**job["path_params"], **(job["params"] or {})}).items()}
+        as_file = lambda x: (x["__file__"], x["content"].encode()) if isinstance(x, dict) else x  # noqa: E731
+        for k, v in form_values(op, job.get("form")).items():
+            kwargs[snake(k)] = [as_file(x) for x in v] if isinstance(v, list) else as_file(v)
+        if job.get("body") is not None:
+            # The generated method's one parameter that is neither a spec parameter nor a form field is the body.
+            spec_names = {snake(p.get("name", "")) for p in op["parameters"]} | {snake(k) for k in op.get("form") or {}}
+            free = [n for n in inspect.signature(getattr(api_cls, attr)).parameters
+                    if n != "self" and not n.startswith("_") and n not in spec_names]
+            if not free:
+                return {"url": url, "status": None, "headers": {}, "body": b"",
+                        "client_error": "the generated method takes no request body"}
+            kwargs[free[0]] = job["body"]
         try:
             resp = getattr(api_cls(client), attr + "_with_http_info")(**kwargs, _request_timeout=30)
             return {"url": url, "status": resp.status_code, "headers": dict(resp.headers or {}), "body": resp.raw_data, "client_error": None}
@@ -246,8 +310,11 @@ class BatchClient:
             if op is None:
                 continue
             values = typed_params(op, {**job["path_params"], **(job["params"] or {})})
-            calls.append({"id": job["id"], "operationId": op["operationId"], "params": values,
-                          "hasParams": bool(op["parameters"]), "auth": auth_header(job["cred"])})
+            values.update(form_values(op, job.get("form")))
+            calls.append({"id": job["id"], "operationId": op["operationId"], "params": values, "body": job.get("body"),
+                          "hasParams": bool(op["parameters"] or op.get("form") or op.get("requestBody")),
+                          "specNames": [p.get("name") for p in op["parameters"]] + list(op.get("form") or {}),
+                          "auth": auth_header(job["cred"]), "headers": XSRF})
         with tempfile.TemporaryDirectory() as tmp:
             calls_file, out_file = Path(tmp) / "calls.json", Path(tmp) / "out.json"
             calls_file.write_text(json.dumps(calls), encoding="utf-8")
@@ -332,6 +399,31 @@ def resolve_fixtures(suite, handoff, base):
     return found, notes
 
 
+def run_step(base, handoff, step, fx):
+    """One setup step as raw HTTP; saves values from its answer into fx. Returns None, or why it failed."""
+    method, path_tmpl = step["op"].split(" ", 1)
+    try:
+        url, status, _, body = http_call(base, credential(handoff, step.get("as", "admin")), path_tmpl,
+                                         subst(step.get("path", {}), fx), subst(step.get("params", {}), fx), method,
+                                         subst(step.get("body"), fx), subst(step.get("form"), fx))
+    except Exception as e:
+        return f"{step['op']}: {type(e).__name__}: {e}"
+    if status not in step.get("ok", [200, 201, 202, 204]):
+        return f"{step['op']} answered {status}: {body[:300].decode('utf-8', 'replace')}"
+    doc = None
+    for name, path in step.get("save", {}).items():
+        if doc is None:
+            try:
+                doc = json.loads(body or b"null")
+            except ValueError:
+                return f"{step['op']} answered {status} without JSON"
+        val = get_path(doc, path) if doc is not None else MISSING
+        if val is MISSING:
+            return f"{step['op']} answered {status} without {path}"
+        fx[name] = val
+    return None
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("suite")
@@ -371,39 +463,58 @@ def main():
     if not handoff.get("seeded"):
         notes.append("harness reports seeded=false: " + ", ".join(handoff.get("gaps", {})))
 
-    jobs = []
+    # One job per scenario and client. A scenario's "setup" steps run first, once per client, as raw HTTP, so every
+    # client writes to objects of its own; {cx} is the client's number, and each step's "save" adds fixtures.
+    jobs, prepared = {n: [] for n in names}, {}
     for scn in suite["scenarios"]:
         method, path_tmpl = scn["op"].split(" ", 1)
-        jobs.append({"id": scn["id"], "method": method, "path_tmpl": path_tmpl, "cred": credential(handoff, scn["as"]),
-                     "path_params": subst(scn.get("path", {}), fixtures), "params": subst(scn.get("params", {}), fixtures),
-                     "scn": dict(scn, expect=subst(scn["expect"], fixtures))})
-    for c in clients.values():
+        for cx, n in enumerate(names):
+            fx, setup_error = dict(fixtures, cx=cx), None
+            for step in scn.get("setup", []):
+                setup_error = run_step(base, handoff, step, fx)
+                if setup_error:
+                    break
+            job = {"id": scn["id"], "method": method, "path_tmpl": path_tmpl, "cred": credential(handoff, scn["as"]),
+                   "path_params": subst(scn.get("path", {}), fx), "params": subst(scn.get("params", {}), fx),
+                   "body": subst(scn.get("body"), fx), "form": subst(scn.get("form"), fx),
+                   "scn": dict(scn, expect=subst(scn["expect"], fx)), "setup_error": setup_error}
+            prepared[(scn["id"], n)] = job
+            if not setup_error:
+                jobs[n].append(job)
+    for n, c in clients.items():
         if isinstance(c, BatchClient):
-            c.prepare(jobs)
+            c.prepare(jobs[n])
 
     rows, cells_by = [], {}
-    for job in jobs:
-        scn_eval = job["scn"]
-        row = {"scenario": job["id"], "op": scn_eval["op"], "cells": {}}
+    for scn in suite["scenarios"]:
+        row = {"scenario": scn["id"], "op": scn["op"], "cells": {}}
         for n in names:
+            job = prepared[(scn["id"], n)]
+            scn_eval = job["scn"]
             if n in setup_errors:
                 row["cells"][n] = "ERROR"
                 continue
-            try:
-                res = clients[n].call(job)
-            except Exception as e:
-                res = {"url": build_url(base, job["path_tmpl"], job["path_params"], job["params"]), "status": None, "headers": {},
-                       "body": b"", "client_error": f"{type(e).__name__}: {e}"}
-            if res is None:
-                row["cells"][n] = "N/A"
-                continue
-            diffs = evaluate(scn_eval, res)
-            # A refusal proves nothing while the matching success case fails (e.g. nothing seeded, every path 404).
-            last = job["id"].rsplit(".", 1)[1]
-            needs = scn_eval.get("needs") or (job["id"].rsplit(".", 1)[0] + ".success" if last in NEGATIVE else None)
-            blocked = not diffs and needs and cells_by.get((needs, n)) != "PASS"
-            if blocked:
-                diffs = [f"passes only vacuously: {needs} did not pass for {n}"]
+            if job["setup_error"]:
+                # Nothing to call: the objects this client's call needs could not be made (that operation's own
+                # scenario reports why).
+                res = {"url": None, "status": None, "headers": {}, "body": b""}
+                diffs, blocked = ["setup failed: " + job["setup_error"]], True
+            else:
+                try:
+                    res = clients[n].call(job)
+                except Exception as e:
+                    res = {"url": build_url(base, job["path_tmpl"], job["path_params"], job["params"]), "status": None,
+                           "headers": {}, "body": b"", "client_error": f"{type(e).__name__}: {e}"}
+                if res is None:
+                    row["cells"][n] = "N/A"
+                    continue
+                diffs = evaluate(scn_eval, res)
+                # A refusal proves nothing while the matching success case fails (e.g. nothing seeded, every path 404).
+                last = job["id"].rsplit(".", 1)[1]
+                needs = scn_eval.get("needs") or (job["id"].rsplit(".", 1)[0] + ".success" if last in NEGATIVE else None)
+                blocked = not diffs and needs and cells_by.get((needs, n)) != "PASS"
+                if blocked:
+                    diffs = [f"passes only vacuously: {needs} did not pass for {n}"]
             # ERROR only when no answer came back at all; an answer the client rejects is a FAIL with its status.
             row["cells"][n] = "PASS" if not diffs else "BLOCKED" if blocked else ("ERROR" if res["status"] is None else "FAIL")
             cells_by[(job["id"], n)] = row["cells"][n]
@@ -411,7 +522,7 @@ def main():
                 body = res["body"].decode("utf-8", "replace") if isinstance(res["body"], bytes) else str(res["body"])
                 (out / "failures" / f"{job['id']}__{n}.json").write_text(json.dumps({
                     "scenario": job["id"], "client": n, "as": scn_eval["as"],
-                    "request": {"method": job["method"], "url": res["url"]},
+                    "request": {"method": job["method"], "url": res["url"], "body": job["body"], "form": job["form"]},
                     "response": {"status": res["status"], "headers": res["headers"], "body": body[:20000]},
                     "expected": scn_eval["expect"], "diff": diffs,
                 }, indent=2), encoding="utf-8")

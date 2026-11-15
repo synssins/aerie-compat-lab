@@ -3,7 +3,8 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from run import INVALID_TOKEN, MISSING, auth_header, credential, get_path, operation, run_checks, subst, typed_params  # noqa: E402
+from run import (INVALID_TOKEN, MISSING, auth_header, credential, form_values, get_path, multipart, operation,  # noqa: E402
+                 run_checks, subst, typed_params)
 
 doc = {"results": [{"id": "1", "space": {"key": "LAB"}}, {"id": "2", "space": {"key": "LAB"}}], "size": 2, "_links": {}}
 assert get_path(doc, "results.1.id") == "2"
@@ -26,4 +27,16 @@ handoff = {"credentials": {"user": {"user": "u", "password": "p"}}, "tokens": {"
 assert auth_header(credential(handoff, "user")) == "Basic dTpw"
 assert auth_header(credential(handoff, "token:pat")) == "Bearer kbt_1"
 assert credential(handoff, "token:invalid") == {"token": INVALID_TOKEN}
+# Multipart: a file stays a file only where the spec says binary; undeclared fields are not sent.
+f = {"__file__": "a.txt", "content": "hi", "type": "text/plain"}
+spec["paths"]["/u"] = {"post": {"operationId": "u", "requestBody": {"content": {"multipart/form-data": {"schema": {"properties": {
+    "file": {"type": "array", "items": {"type": "string", "format": "binary"}}, "minorEdit": {"type": "boolean"}}}}}}}}
+spec["paths"]["/v"] = {"post": {"operationId": "v", "requestBody": {"content": {"multipart/form-data": {"schema": {"properties": {
+    "file": {"type": "string"}}}}}}}}
+assert form_values(operation(spec, "POST", "/u"), {"file": f, "minorEdit": "true", "x": 1}) == {"file": [f], "minorEdit": True}
+assert form_values(operation(spec, "POST", "/v"), {"file": f}) == {"file": "hi"}
+data, ctype = multipart({"file": f, "minorEdit": True})
+boundary = ctype.split("boundary=")[1]
+assert ctype.startswith("multipart/form-data; boundary=") and data.endswith(f"--{boundary}--\r\n".encode())
+assert b'name="file"; filename="a.txt"\r\nContent-Type: text/plain\r\n\r\nhi\r\n' in data and b'name="minorEdit"\r\n\r\ntrue\r\n' in data
 print("ok")
