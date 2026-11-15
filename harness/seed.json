@@ -1,0 +1,25 @@
+{
+  "users": [
+    {"name": "lab-admin", "display": "Lab Admin", "admin": true},
+    {"name": "lab-user", "display": "Lab User", "groups": ["lab-readers"]},
+    {"name": "lab-noaccess", "display": "Lab No Access"}
+  ],
+  "groups": [
+    {"name": "lab-readers"}
+  ],
+  "spaces": [
+    {"key": "LAB", "name": "Lab", "description": "Lab fixture space", "view": ["lab-readers"], "homepage": "Lab Home"},
+    {"key": "PRIV", "name": "Private", "description": "Only lab-admin may view", "view": [], "homepage": "Private Home"}
+  ],
+  "pages": [
+    {"ref": "lab_home", "space": "LAB", "title": "Lab Home", "body": "<p>lab fixture</p>", "labels": ["lab-t1"]},
+    {"ref": "lab_child", "space": "LAB", "parent": "lab_home", "title": "Lab Child {n:02}", "count": 12, "body": "<p>lab child {n}</p>", "labels": ["lab-t1"]},
+    {"ref": "priv_home", "space": "PRIV", "title": "Private Home", "body": "<p>private fixture</p>"}
+  ],
+  "tokens": [
+    {"user": "lab-user", "name": "lab-user-pat"}
+  ],
+  "oauth_clients": [
+    {"name": "lab-client", "redirect_uri": "http://localhost:8765/callback", "pkce": true}
+  ]
+}

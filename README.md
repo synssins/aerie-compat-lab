@@ -1,6 +1,6 @@
 # aerie-compat-lab
 
-The compatibility lab for [Aerie](https://github.com/synssins/aerie), a self-hosted knowledge base. The lab proves that existing Confluence integrations work against aerie unchanged: it runs clients built from Atlassian's own published API specs against the aerie container image and reports every answer they reject.
+The compatibility lab for [Aerie](https://github.com/synssins/aerie), a self-hosted knowledge base. The lab proves that existing integrations work against aerie unchanged: it runs clients built from Atlassian's own published API specs against the aerie container image and reports every answer they reject.
 
 An operation counts as compatible only when clients in at least two languages call it and accept every answer. If existing code doesn't work unchanged, it isn't done.
 
@@ -20,7 +20,7 @@ Only results leave the lab. [CLEAN_ROOM.md](CLEAN_ROOM.md) has the full policy.
 
 | Set | Built from | Why |
 |---|---|---|
-| Generated clients: Java, Python, TypeScript | Atlassian's published OpenAPI files for Data Center 9.0.1, 9.2.4, 9.5.1, 10.2.20 and 11.1.0, and Cloud v1 and v2, pinned in [clients/specs.csv](clients/specs.csv) | Atlassian publishes no official Confluence SDK and points developers at generating clients from these files |
+| Generated clients: Java, Python, TypeScript | Atlassian's published OpenAPI files for Data Center 9.0.1, 9.2.4, 9.5.1, 10.2.20 and 11.1.0, and Cloud v1 and v2, pinned in [clients/specs.csv](clients/specs.csv) | Atlassian publishes no official SDK and points developers at generating clients from these files |
 | Community clients | Widely used open-source libraries, after a license check | How many real integrations are written |
 | Raw HTTP suites | Our own scenarios | Headers, paging links, error bodies and auth flows that generated clients don't check |
 
@@ -51,12 +51,12 @@ Near the end, a customer runs their own integrations against a staging aerie loa
 
 ## Status
 
-Not built yet. The roadmap starts the lab in Phase 1, with every suite failing until aerie passes it. First tasks:
+Phase 1 in progress. Every suite fails until aerie passes it; that is the expected state. First tasks:
 
-- [ ] `harness/`: start a pinned aerie image and seed it
-- [ ] `clients/generate.sh`: download each pinned spec, check its hash, generate the Java, Python and TypeScript clients
-- [ ] `suites/datacenter/t1`: the first scenarios for content, spaces and search
-- [ ] CI: run the lab on every new aerie image and publish the matrix
+- [ ] `harness/`: start a pinned aerie image and seed it. Compose file and seed script written, not yet run against the image; the seed calls are open gaps until aerie's own API is documented, see [harness/README.md](harness/README.md)
+- [x] `clients/generate.sh`: download each pinned spec, check its hash, generate the Java, Python and TypeScript clients
+- [x] `suites/datacenter/t1`: the first scenarios for content, spaces and search, run by `suites/run.py` with raw HTTP and the generated Python clients
+- [x] CI: `.github/workflows/lab.yml` runs the lab against a given image tag and uploads the matrix (not yet run on GitHub; aerie's image build must send the `aerie-image` dispatch to run it on every new image)
 
 ## License
 
