@@ -2,7 +2,7 @@
 
 | File | What |
 |---|---|
-| `specs.csv` | Each spec file the clients are generated from: product, version, address and SHA-256 (vendor files retrieved 2026-11-15), and optionally the languages for that row. The last row is aerie's own released contract `contracts-v1` (`datacenter/openapi.yaml` inside the release archive), generated in Python only, for response-schema validation |
+| `specs.csv` | Each spec file the clients are generated from: product, version, address and SHA-256 (vendor files retrieved 2026-11-15), and optionally the languages for that row. The last row is aerie's own released contract `contracts-v2` (`datacenter/openapi.yaml` inside the release archive), generated in Python only, for response-schema validation |
 | `generate.sh` | Downloads each file, refuses it if the hash differs, generates Java (`java`, okhttp-gson), Python (`python`) and TypeScript (`typescript-axios`) clients into `build/` with openapi-generator 7.26.0, itself pinned by SHA-256, and builds each one (Python compile check, `mvn package`, `npm install` with `tsc`). Needs bash, curl, sha256sum, tar, Java 11+, Python 3, Maven and npm; the runner container in `harness/` has them all. `ONLY=<id>` and `LANGS="python"` narrow a run |
 | `runners/` | `JavaRunner.java` and `ts-runner.js`: run a batch of suite calls through one generated Java or TypeScript client and return each raw answer to `suites/run.py` |
 | `community/` (to write) | Pinned versions of community client libraries, each with its license recorded |

@@ -14,18 +14,18 @@ Starts the aerie container image for the commit under test (`ghcr.io/synssins/ae
 
 ## Seeding
 
-`seed.py` uses only calls described in the published contract release `contracts-v1` (`aerie/openapi.yaml`, aerie's own `/api/v1` API as it behaves today):
+`seed.py` uses only calls described in aerie's own `/api/v1` API in the published contract releases (`aerie/openapi.yaml`; `contracts-v1` as aerie behaves today, `contracts-v2` for the planned OAuth client registration):
 
 | Step | Calls |
 |---|---|
 | First-run setup | `GET /api/v1/setup/status`, `POST /api/v1/setup` with the remote setup code the image writes to `/app/App_Data/setup-code.txt` |
-| Page parents (`GAP-PAGE-PARENT`) | aerie nests pages only under folders (`parentId`: "Must be a folder in this space"), so a fixture page with children (`Lab Home`) is created as a Folder. How the vendor surface shows a folder with child pages is for the spec room |
 | Admin sign-in codes | Setup answers 409 `{"step":"enroll"}`: administrators must enroll sign-in codes. `POST /api/v1/auth/codes/key`, then `POST /api/v1/auth/codes` with a TOTP code |
 | Users | `POST /api/v1/admin/users/invite`, then `POST /api/v1/auth/local/password` with the invite's set-password token |
 | Groups | `POST /api/v1/admin/groups`, `PUT /api/v1/admin/groups/{id}/members/{userId}` |
 | Spaces | `POST /api/v1/spaces` (private), `PUT /api/v1/spaces/{id}/roles` granting each view group `Reader` by its key `local:<id>` |
 | Pages | `POST /api/v1/spaces/{id}/pages` with parent, tags (the fixture's labels) and editor JSON body |
-| Tokens | `POST /api/v1/tokens` signed in as the owner, kind `Personal`, read scope, 30 days |
+| Tokens | `POST /api/v1/tokens` as the owner, kind `Personal`, 30 days: `lab-user` Read and Write; `lab-admin` Write (the administrator's Basic credential), Read, and Read limited to `LAB` |
+| OAuth clients | `POST /api/v1/admin/oauth/clients` (planned in contracts-v2): `lab-public` (public) and `lab-confidential`, PKCE, scopes `READ WRITE`, redirect `http://127.0.0.1:8765/callback`. Until aerie serves it, the hand-off records `GAP-SEED-OAUTH_CLIENTS` and only the OAuth cases fail |
 
 The session cookies (`__Host-kb`, `__Host-kb-pending`) are `Secure`, so `seed.py` carries them by hand over the plain-HTTP lab network.
 
@@ -45,12 +45,13 @@ ssh docker-host 'bash -s -- latest' < harness/run-on-host.sh
 ssh docker-host 'LAB_REF=my-branch AERIE_PORT=18091 bash -s -- sha-cd7b0e8' < harness/run-on-host.sh
 ```
 
-## Open gaps
+## Open gaps and rulings
 
-| Gap | Status |
+| Item | Status |
 |---|---|
 | `GAP-HEALTH` | aerie has no health endpoint; every unknown path returns the web app with 200 `text/html`. The harness waits for `GET /api/v1/setup/status` to answer 200 JSON |
-| `GAP-SEED-OAUTH_CLIENTS` | aerie's API has no call to register an OAuth client; `lab-client` is not seeded |
-| Space keys | aerie keys are 2-32 lowercase letters, digits and hyphens, so `LAB` and `PRIV` are created as `lab` and `priv`. How the vendor surface maps uppercase `spaceKey=LAB` is for the spec room |
-| Space home pages | aerie spaces have no home page setting; `Lab Home` and `Private Home` are top-level pages |
-| Admin sign-in codes | The admin must give a TOTP code at every sign-in. The hand-off records the key; how basic auth on the vendor surface treats an admin with codes is for the spec room |
+| `GAP-SEED-OAUTH_CLIENTS` | Open until aerie serves `POST /api/v1/admin/oauth/clients` (planned in contracts-v2). Seeding still succeeds; only the OAuth cases fail |
+| Space keys | Ruled (contracts-v2, `spaces.md`): aerie stores `lab` and `priv`; the compatible surface accepts any case and returns `LAB` and `PRIV` |
+| Child pages | Ruled (contracts-v2, `content.md`): aerie nests pages only under folders, so `Lab Home` is seeded as a folder; the surface shows folders as pages with children |
+| Home pages | Ruled (contracts-v2, `spaces.md`): aerie spaces have none; `homepage` is never returned, and clients list the top level with `depth=root` |
+| Admin sign-in codes | Ruled (contracts-v2, `identity.md`): password Basic is refused for accounts with codes, so the hand-off's `admin` Basic credential carries the administrator's personal access token; `admin-password` keeps the password and the sign-in code key for the auth suite |
