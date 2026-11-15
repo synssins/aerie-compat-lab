@@ -289,7 +289,11 @@ class PythonClient:
             if not free:
                 return {"url": url, "status": None, "headers": {}, "body": b"",
                         "client_error": "the generated method takes no request body"}
-            kwargs[free[0]] = job["body"]
+            # Built by the model's own from_json: a oneOf wrapper (aerie's label body) made from a plain dict
+            # serializes to nothing, so the request would go out without a body.
+            ann = inspect.signature(getattr(api_cls, attr)).parameters[free[0]].annotation
+            model = next((a for a in [ann, getattr(ann, "__origin__", None), *getattr(ann, "__args__", ())] if hasattr(a, "from_json")), None)
+            kwargs[free[0]] = model.from_json(json.dumps(job["body"])) if model else job["body"]
         try:
             resp = getattr(api_cls(client), attr + "_with_http_info")(**kwargs, _request_timeout=30)
             return {"url": url, "status": resp.status_code, "headers": dict(resp.headers or {}), "body": resp.raw_data, "client_error": None}
