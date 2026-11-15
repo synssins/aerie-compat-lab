@@ -5,12 +5,13 @@ Starts the aerie container image for the commit under test (`ghcr.io/synssins/ae
 | File | What |
 |---|---|
 | `docker-compose.yml` | Compose project `aerie-lab`: the image on `AERIE_PORT` with an empty throwaway data volume, plus the `runner` toolbox (profile `runner`: Python 3.12 with the suite dependencies, JDK 17 with Maven, Node with npm) |
-| `seed.json` | The fixture: users, a group, spaces `LAB` and `PRIV`, 14 pages, a personal access token and an OAuth client |
+| `seed.json` | The fixture: users, a group, spaces `LAB`, `PRIV` and `LABW` (where the T1 write scenarios make their pages), 14 pages, a personal access token and an OAuth client |
 | `seed.py` | Waits for aerie, seeds `seed.json` through `/api/v1`, writes the hand-off file `reports/harness.json` |
 | `redact.py` | Blanks passwords, sign-in code keys and tokens in the hand-off file before it is kept |
 | `test_seed.py` | Self-check for the sign-in code (RFC 6238 vectors) and the redaction |
 | `run-lab.sh` | The whole lab in this checkout against one image, needing only docker and curl: used by `run-on-host.sh` and by CI |
 | `run-on-host.sh` | Clones or updates the lab on a Docker host, then runs `run-lab.sh` there |
+| `host-timer.sh` | The host's own timer: a crontab line for the host user that runs `run-on-host.sh` for each new `aerie:latest` digest |
 
 ## Seeding
 
@@ -44,6 +45,8 @@ docker compose -p aerie-lab -f harness/docker-compose.yml --profile runner down 
 ssh docker-host 'bash -s -- latest' < harness/run-on-host.sh
 ssh docker-host 'LAB_REF=my-branch AERIE_PORT=18091 bash -s -- sha-cd7b0e8' < harness/run-on-host.sh
 ```
+
+`host-timer.sh install` (run on the host from a checkout) copies itself to `~/aerie-compat-lab/.timer/` and adds one line to the host user's crontab: every 30 minutes, under a lock, it reads the digest of `aerie:latest` anonymously and runs `run-on-host.sh` at `LAB_REF` (default `main`) when that digest has not been tested. Each run's `run.json` and matrices are kept in `.timer/runs/<UTC time>/`, the log in `.timer/log`. `host-timer.sh remove` takes the line out. No sudo and no system unit: it is the fallback for GitHub's scheduled trigger, which had not fired once on this repository.
 
 ## Open gaps and rulings
 

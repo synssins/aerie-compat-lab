@@ -1,7 +1,7 @@
 name: lab
 
 # Runs the lab against one aerie image and publishes the operation-by-client matrix.
-# - schedule: every 30 minutes, reads the digest of ghcr.io/synssins/aerie:latest (public, anonymous)
+# - schedule: twice an hour, reads the digest of ghcr.io/synssins/aerie:latest (public, anonymous)
 #   and runs the lab only when no earlier run has tested that digest (a cache entry per tested digest).
 # - workflow_dispatch: by hand with a tag.
 # - repository_dispatch aerie-image: {client_payload: {tag: sha-xxxxxxx}}, if aerie's image build sends it.
