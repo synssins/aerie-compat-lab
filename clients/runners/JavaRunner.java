@@ -1,7 +1,11 @@
 // Runs a batch of calls through one generated Java client (openapi-generator, okhttp-gson library).
 //
 // Usage: java -cp <client jar>:<client lib>/* JavaRunner.java <base url> <api package> <client jar> <calls.json> <out.json>
-// calls.json: [{"id", "operationId", "params": {spec name: value}, "auth": "<Authorization header>"}]
+// calls.json: [{"id", "operationId", "params": {spec name: value}, "specNames": [...], "body": json or null,
+//               "auth": "<Authorization header>", "headers": {name: value}}]
+// A params value {"__file__": name, "content", "type"} is a file part: it becomes a java.io.File of that name.
+// The body goes to the one method parameter that is not a spec parameter, turned into its model type by the
+// client's own JSON (Gson) setup.
 // out.json:   [{"id", "status", "headers", "body", "client_error"}]
 //
 // The operation is found by its operationId among the client's *Api classes and called with its
@@ -73,6 +77,11 @@ public class JavaRunner {
             Object client = clientCls.getConstructor().newInstance();
             clientCls.getMethod("setBasePath", String.class).invoke(client, base);
             clientCls.getMethod("addDefaultHeader", String.class, String.class).invoke(client, "Authorization", c.get("auth").getAsString());
+            if (c.has("headers")) {
+                for (Map.Entry<String, JsonElement> h : c.getAsJsonObject("headers").entrySet()) {
+                    clientCls.getMethod("addDefaultHeader", String.class, String.class).invoke(client, h.getKey(), h.getValue().getAsString());
+                }
+            }
             OkHttpClient http = ((OkHttpClient) clientCls.getMethod("getHttpClient").invoke(client)).newBuilder()
                 .addInterceptor(chain -> {
                     Response r = chain.proceed(chain.request());
@@ -88,12 +97,22 @@ public class JavaRunner {
             JsonObject params = c.getAsJsonObject("params");
             Map<String, JsonElement> byName = new HashMap<>();
             params.entrySet().forEach(e -> byName.put(norm(e.getKey()), e.getValue()));
+            java.util.Set<String> specNames = new java.util.HashSet<>();
+            if (c.has("specNames")) c.getAsJsonArray("specNames").forEach(x -> specNames.add(norm(x.getAsString())));
+            JsonElement body = c.has("body") ? c.get("body") : null;
             Parameter[] ps = target.getParameters();
             Object[] args = new Object[ps.length];
             for (int i = 0; i < ps.length; i++) {
                 JsonElement v = byName.get(norm(ps[i].getName()));
+                if (v == null && body != null && !body.isJsonNull() && !specNames.contains(norm(ps[i].getName()))) {
+                    Object gson = Class.forName(clientCls.getPackageName() + ".JSON").getMethod("getGson").invoke(null);
+                    args[i] = ((Gson) gson).fromJson(body, ps[i].getParameterizedType());
+                    body = null;
+                    continue;
+                }
                 args[i] = v == null || v.isJsonNull() ? null : convert(v, ps[i].getParameterizedType());
             }
+            if (body != null && !body.isJsonNull()) throw new IllegalStateException("the generated method takes no request body");
             Object api = target.getDeclaringClass().getConstructor(clientCls).newInstance(client);
             String error = null;
             try {
@@ -130,6 +149,16 @@ public class JavaRunner {
                 list.add(convert(v, item));
             }
             return list;
+        }
+        if (v.isJsonObject() && v.getAsJsonObject().has("__file__")) {
+            JsonObject f = v.getAsJsonObject();
+            Path dir = Files.createTempDirectory("lab-file");
+            Path file = dir.resolve(f.get("__file__").getAsString());
+            Files.writeString(file, f.get("content").getAsString());
+            file.toFile().deleteOnExit();
+            dir.toFile().deleteOnExit();
+            if (raw == java.io.File.class) return file.toFile();
+            return f.get("content").getAsString();
         }
         String s = v.isJsonPrimitive() ? v.getAsString() : v.toString();
         if (raw == String.class) return s;

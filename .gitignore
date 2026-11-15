@@ -2,3 +2,4 @@ reports/
 clients/build/
 harness/aerie.env
 __pycache__/
+.timer/

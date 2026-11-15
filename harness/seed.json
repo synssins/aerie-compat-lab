@@ -10,7 +10,8 @@
   ],
   "spaces": [
     {"key": "LAB", "name": "Lab", "description": "Lab fixture space", "view": ["lab-readers"]},
-    {"key": "PRIV", "name": "Private", "description": "Only lab-admin may view", "view": []}
+    {"key": "PRIV", "name": "Private", "description": "Only lab-admin may view", "view": []},
+    {"key": "LABW", "name": "Lab Writes", "description": "Where the T1 write scenarios make their pages", "view": ["lab-readers"]}
   ],
   "pages": [
     {"ref": "lab_home", "space": "LAB", "title": "Lab Home", "body": "<p>lab fixture</p>", "labels": ["lab-t1"]},

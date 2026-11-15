@@ -2,12 +2,16 @@
 // built to dist/ with useSingleRequestParameter=true).
 //
 // Usage: node ts-runner.js <client dir> <base url> <calls.json> <out.json>
-// calls.json: [{"id", "operationId", "params": {spec name: value}, "hasParams": bool, "auth": "<Authorization header>"}]
+// calls.json: [{"id", "operationId", "params": {spec name: value}, "specNames": [...], "body": json or null,
+//               "hasParams": bool, "auth": "<Authorization header>", "headers": {name: value}}]
+// A params value {"__file__": name, "content", "type"} is a file part, sent as a File with that name.
+// The body goes under the request-object key the method reads that is not a spec parameter.
 // out.json:   [{"id", "status", "headers", "body", "client_error"}]
 //
 // typescript-axios checks types only at compile time, so at run time the client accepts any body; the
 // suite's own checks judge the answer it hands back.
 const fs = require('fs');
+const { File } = require('buffer');
 const path = require('path');
 
 const [, , clientDir, base, callsFile, outFile] = process.argv;
@@ -31,8 +35,19 @@ async function run(c) {
     if (name) { target = [Cls, name]; break; }
   }
   if (!target) return { id: c.id, status: null, headers: {}, body: '', client_error: `operationId ${c.operationId} not found in generated client` };
-  const api = new target[0](new lib.Configuration({ basePath: base, baseOptions: { headers: { Authorization: c.auth } } }));
-  const params = Object.fromEntries(Object.entries(c.params).map(([k, v]) => [camel(k), v]));
+  const api = new target[0](new lib.Configuration({ basePath: base, baseOptions: { headers: { Authorization: c.auth, ...(c.headers || {}) } } }));
+  const asFile = (v) => (v && typeof v === 'object' && v.__file__ ? new File([v.content], v.__file__, { type: v.type || 'application/octet-stream' }) : v);
+  // The compiled method reads requestParameters.<key>: each value goes under the key with the same normalized
+  // name (so "X-Atlassian-Token" finds xAtlassianToken); the body's key is the one that is no spec parameter.
+  const keys = [...api[target[1]].toString().matchAll(/requestParameters\.(\w+)/g)].map((m) => m[1]);
+  const keyFor = (k) => keys.find((x) => norm(x) === norm(k)) || camel(k);
+  const params = Object.fromEntries(Object.entries(c.params).map(([k, v]) => [keyFor(k), Array.isArray(v) ? v.map(asFile) : asFile(v)]));
+  if (c.body !== null && c.body !== undefined) {
+    const spec = new Set((c.specNames || []).map((n) => norm(n)));
+    const key = keys.find((k) => !spec.has(norm(k)));
+    if (!key) return { id: c.id, status: null, headers: {}, body: '', client_error: 'the generated method takes no request body' };
+    params[key] = c.body;
+  }
   try {
     const r = c.hasParams ? await api[target[1]](params) : await api[target[1]]();
     return answer(c, r, null);
