@@ -2,6 +2,7 @@
   "surface": "datacenter",
   "tier": "t1",
   "specs": ["dc-9.0.1", "dc-9.2.4", "dc-9.5.1", "dc-10.2.20", "dc-11.1.0"],
+  "contracts": ["aerie-dc-contracts-v1"],
   "fixtures": {
     "lab_home": {"path": "/rest/api/content", "params": {"spaceKey": "LAB", "title": "Lab Home"}, "pick": "results.0.id"},
     "priv_home": {"path": "/rest/api/content", "params": {"spaceKey": "PRIV", "title": "Private Home"}, "pick": "results.0.id"}
@@ -91,6 +92,15 @@
     {"id": "search.site.not_allowed", "op": "GET /rest/api/search", "as": "user", "params": {"cql": "space = PRIV"},
      "expect": {"200": [["eq", "size", 0]]}},
     {"id": "search.site.invalid_cql", "op": "GET /rest/api/search", "as": "user", "params": {"cql": "space = = ("},
-     "expect": {"400": []}}
+     "expect": {"400": []}},
+
+    {"id": "auth.token.content_list", "op": "GET /rest/api/content", "as": "token:lab-user-pat", "params": {"spaceKey": "LAB", "type": "page"},
+     "note": "The seeded personal access token of lab-user, sent as Authorization: Bearer.",
+     "expect": {"200": [["len_ge", "results", 1], ["eq", "results.0.type", "page"]]}},
+    {"id": "auth.token.space_get", "op": "GET /rest/api/space/{spaceKey}", "as": "token:lab-user-pat", "path": {"spaceKey": "LAB"},
+     "expect": {"200": [["eq", "key", "LAB"]]}},
+    {"id": "auth.token.invalid", "op": "GET /rest/api/space/{spaceKey}", "as": "token:invalid", "path": {"spaceKey": "LAB"},
+     "needs": "auth.token.space_get", "note": "A bearer token aerie never issued.",
+     "expect": {"401": []}}
   ]
 }

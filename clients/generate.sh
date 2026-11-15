@@ -1,12 +1,17 @@
 #!/usr/bin/env bash
 # Downloads every spec file pinned in specs.csv, refuses any whose SHA-256 differs
-# from its pin, and generates the Java, Python and TypeScript clients into build/.
+# from its pin, generates the Java, Python and TypeScript clients into build/ and
+# builds each one (Python compile check, Maven package, npm install + tsc).
 # Nothing under build/ is committed.
+#
+# A pinned address may name a member inside a .tar.gz release asset as <url>#<member>;
+# the archive is pinned, then the member is taken from it. YAML members are converted
+# to JSON for the suite runner. The optional langs column narrows the languages for one row.
 #
 # Usage: clients/generate.sh            all specs, all languages
 #        ONLY=dc-9.2.4 clients/generate.sh
 #        LANGS="python" clients/generate.sh
-# Needs: bash, curl, sha256sum, java 11+, python 3 (compile check of the Python clients).
+# Needs: bash, curl, sha256sum, tar, java 11+, python 3; mvn for java, npm for typescript-axios.
 set -euo pipefail
 
 here=$(cd "$(dirname "$0")" && pwd)
@@ -17,7 +22,10 @@ GEN_URL="https://repo1.maven.org/maven2/org/openapitools/openapi-generator-cli/$
 LANGS=${LANGS:-"java python typescript-axios"}
 ONLY=${ONLY:-}
 
-for tool in curl sha256sum java python; do
+need=(curl sha256sum tar java python)
+[[ " $LANGS " == *" java "* ]] && need+=(mvn)
+[[ " $LANGS " == *" typescript-axios "* ]] && need+=(npm)
+for tool in "${need[@]}"; do
   command -v "$tool" >/dev/null || { echo "missing tool: $tool" >&2; exit 2; }
 done
 
@@ -29,26 +37,55 @@ if ! echo "$GEN_SHA256  $jar" | sha256sum -c --quiet -; then
   exit 1
 fi
 
+# Builds one generated client; output goes to the language's log.
+build_client() {
+  local lang=$1 out=$2 pkg=$3
+  case "$lang" in
+    python) python -m compileall -q "$out/$pkg" ;;
+    # -parameters keeps parameter names, which the Java runner matches by name.
+    java) (cd "$out" && mvn -q -B -Dmaven.repo.local="$build/m2" -DskipTests -Dmaven.javadoc.skip=true -Dmaven.source.skip=true \
+             -Dmaven.compiler.parameters=true package dependency:copy-dependencies -DincludeScope=runtime -DoutputDirectory=target/lib) ;;
+    # The generated package.json builds dist/ with tsc on install ("prepare").
+    typescript-axios) (cd "$out" && npm install --no-audit --no-fund --loglevel=error --cache "$build/npm-cache") && [ -f "$out/dist/index.js" ] ;;
+  esac
+}
+
 failed=()
-while IFS=, read -r id product version url sha; do
-  sha=${sha%$'\r'}
+while IFS=, read -r id product version url sha langs; do
+  sha=${sha%$'\r'}; langs=${langs%$'\r'}
   [ -n "$ONLY" ] && [ "$id" != "$ONLY" ] && continue
   spec="$build/specs/$id.json"
   echo "== $id ($product $version)"
-  curl -fsSL -o "$spec.part" "$url" || { echo "   download failed: $url" >&2; failed+=("$id:download"); continue; }
-  actual=$(sha256sum "$spec.part" | cut -d' ' -f1)
+  fetch=${url%%#*}
+  member=; [[ "$url" == *"#"* ]] && member=${url#*#}
+  curl -fsSL -o "$build/specs/$id.part" "$fetch" || { echo "   download failed: $fetch" >&2; failed+=("$id:download"); continue; }
+  actual=$(sha256sum "$build/specs/$id.part" | cut -d' ' -f1)
   if [ "$actual" != "$sha" ]; then
     # Never generate from an unpinned file; the pin changes only by reviewed pull request.
-    mv "$spec.part" "$build/specs/$id.rejected.json"
+    mv "$build/specs/$id.part" "$build/specs/$id.rejected"
     echo "   REFUSED: SHA-256 $actual, pinned $sha" >&2
     failed+=("$id:hash")
     continue
   fi
-  mv "$spec.part" "$spec"
   echo "   hash ok"
+  if [ -n "$member" ]; then
+    x="$build/specs/$id.extract"; rm -rf "$x"; mkdir -p "$x"
+    tar -xzf "$build/specs/$id.part" -C "$x"
+    rm -f "$build/specs/$id.part"
+    if [[ "$member" == *.yaml || "$member" == *.yml ]]; then
+      java -jar "$jar" generate -i "$x/$member" -g openapi -o "$x/json" >"$build/specs/$id.convert.log" 2>&1
+      mv "$x/json/openapi.json" "$spec"
+    else
+      mv "$x/$member" "$spec"
+    fi
+    rm -rf "$x"
+  else
+    mv "$build/specs/$id.part" "$spec"
+  fi
 
   pkg="client_${id//[.-]/_}"
   for lang in $LANGS; do
+    [ -n "$langs" ] && [[ " $langs " != *" $lang "* ]] && continue
     out="$build/$lang/$id"
     rm -rf "$out"
     props="hideGenerationTimestamp=true"
@@ -57,17 +94,18 @@ while IFS=, read -r id product version url sha; do
       # Cloud v1 has a cache-busting query parameter named "_", which the Python generator leaves without a name.
       python) props="$props,packageName=$pkg"; extra=(--parameter-name-mappings _=underscore_param) ;;
       java) props="$props,invokerPackage=aerie.lab.$pkg,apiPackage=aerie.lab.$pkg.api,modelPackage=aerie.lab.$pkg.model,artifactId=$pkg" ;;
-      typescript-axios) props="$props,npmName=$pkg,supportsES6=true" ;;
+      # One request object per call, so the TypeScript runner passes parameters by name.
+      typescript-axios) props="$props,npmName=$pkg,supportsES6=true,useSingleRequestParameter=true" ;;
     esac
+    log="$build/$lang-$id.log"
     # The DC files declare some unused RestList* schemas as "type: array" with properties; without the
     # normalizer the Python generator writes models that do not compile.
     if java -jar "$jar" generate -i "$spec" -g "$lang" -o "$out" --additional-properties="$props" \
-         --openapi-normalizer REMOVE_PROPERTIES_FROM_TYPE_OTHER_THAN_OBJECT=true "${extra[@]}" \
-         >"$build/$lang-$id.log" 2>&1 \
-       && { [ "$lang" != python ] || python -m compileall -q "$out/$pkg" >>"$build/$lang-$id.log" 2>&1; }; then
+         --openapi-normalizer REMOVE_PROPERTIES_FROM_TYPE_OTHER_THAN_OBJECT=true "${extra[@]}" >"$log" 2>&1 \
+       && build_client "$lang" "$out" "$pkg" >>"$log" 2>&1; then
       echo "   $lang ok"
     else
-      echo "   $lang FAILED, log: $build/$lang-$id.log" >&2
+      echo "   $lang FAILED, log: $log" >&2
       failed+=("$id:$lang")
     fi
   done
@@ -77,4 +115,4 @@ if [ ${#failed[@]} -gt 0 ]; then
   echo "FAILED: ${failed[*]}" >&2
   exit 1
 fi
-echo "all clients generated in $build"
+echo "all clients generated and built in $build"
