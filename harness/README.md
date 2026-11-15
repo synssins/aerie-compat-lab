@@ -18,6 +18,7 @@ Starts the aerie container image for the commit under test (`ghcr.io/synssins/ae
 | Step | Calls |
 |---|---|
 | First-run setup | `GET /api/v1/setup/status`, `POST /api/v1/setup` with the remote setup code the image writes to `/app/App_Data/setup-code.txt` |
+| Page parents (`GAP-PAGE-PARENT`) | aerie nests pages only under folders (`parentId`: "Must be a folder in this space"), so a fixture page with children (`Lab Home`) is created as a Folder. How the vendor surface shows a folder with child pages is for the spec room |
 | Admin sign-in codes | Setup answers 409 `{"step":"enroll"}`: administrators must enroll sign-in codes. `POST /api/v1/auth/codes/key`, then `POST /api/v1/auth/codes` with a TOTP code |
 | Users | `POST /api/v1/admin/users/invite`, then `POST /api/v1/auth/local/password` with the invite's set-password token |
 | Groups | `POST /api/v1/admin/groups`, `PUT /api/v1/admin/groups/{id}/members/{userId}` |

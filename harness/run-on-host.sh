@@ -96,7 +96,7 @@ for suite in $SUITES; do
   say "suite $suite"
   runner python -I suites/run.py "suites/$suite" --harness reports/harness.json --out "reports/${suite//\//-}" \
     >"reports/${suite//\//-}.log" 2>&1 || suite_rc=$?
-  tail -n 3 "reports/${suite//\//-}.log"
+  grep -E '^(Totals|- )' "reports/${suite//\//-}.log" || tail -n 5 "reports/${suite//\//-}.log"
 done
 
 dc logs --no-color aerie </dev/null >reports/aerie.log 2>&1 || true
