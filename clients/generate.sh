@@ -99,7 +99,8 @@ while IFS=, read -r id product version url sha langs; do
       # are still checked by type and requiredness.
       java) props="$props,invokerPackage=aerie.lab.$pkg,apiPackage=aerie.lab.$pkg.api,modelPackage=aerie.lab.$pkg.model,artifactId=$pkg"
             props="$props,disallowAdditionalPropertiesIfNotPresent=false"
-            extra=(--name-mappings _links=underscoreLinks) ;;
+            # Cloud v1 has properties named additionalProperties, which would clash with the map that holds them.
+            extra=(--name-mappings _links=underscoreLinks,additionalProperties=additionalPropertiesField) ;;
       # One request object per call, so the TypeScript runner passes parameters by name. A parameter named
       # "key" (DC 10.x+ watch operations) is shadowed by the generated loop variable of the same name.
       typescript-axios) props="$props,npmName=$pkg,supportsES6=true,useSingleRequestParameter=true"

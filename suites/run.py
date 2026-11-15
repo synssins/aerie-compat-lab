@@ -107,7 +107,15 @@ def resolve(spec, p):
 def operation(spec, method, path_tmpl):
     """The spec's operation object for method + path, with path-level parameters merged and $refs resolved,
     plus "form": the multipart field schemas when the request body is multipart/form-data."""
-    item = spec.get("paths", {}).get(path_tmpl, {})
+    item, renames = spec.get("paths", {}).get(path_tmpl), {}
+    if item is None:
+        # The same path under other parameter names ({id} here, {contentId} in that spec): names map by position.
+        shape = lambda t: re.sub(r"\{\w+\}", "{}", t)  # noqa: E731
+        other = next((t for t in spec.get("paths", {}) if shape(t) == shape(path_tmpl)), None)
+        if other is None:
+            return None
+        item = spec["paths"][other]
+        renames = dict(zip(re.findall(r"\{(\w+)\}", path_tmpl), re.findall(r"\{(\w+)\}", other)))
     op = item.get(method.lower())
     if not op:
         return None
@@ -117,7 +125,18 @@ def operation(spec, method, path_tmpl):
         params[p.get("name")] = p
     media = resolve(spec, op.get("requestBody")).get("content", {})
     form = resolve(spec, (media.get("multipart/form-data") or {}).get("schema")).get("properties")
-    return dict(op, parameters=list(params.values()), form=form)
+    return dict(op, parameters=list(params.values()), form=form, renames=renames)
+
+
+def spec_values(op, job):
+    """Path and query values under this spec's own parameter names, plus the XSRF header where the spec declares
+    it as a parameter (aerie's contract does)."""
+    values = {op["renames"].get(k, k): v for k, v in job["path_params"].items()}
+    values.update(job["params"] or {})
+    for p in op["parameters"]:
+        if p.get("in") == "header" and p.get("name") in XSRF:
+            values[p["name"]] = XSRF[p["name"]]
+    return typed_params(op, values)
 
 
 def form_values(op, form):
@@ -209,7 +228,7 @@ class HttpClient:
 
 
 def snake(name):
-    return re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", name).lower()
+    return re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", name).lower().replace("-", "_")
 
 
 def load_spec(spec_id):
@@ -258,7 +277,7 @@ class PythonClient:
             return deserialize(response_data=response_data, response_types_map=response_types_map)
 
         client.response_deserialize = keep
-        kwargs = {snake(k): v for k, v in typed_params(op, {**job["path_params"], **(job["params"] or {})}).items()}
+        kwargs = {snake(k): v for k, v in spec_values(op, job).items()}
         as_file = lambda x: (x["__file__"], x["content"].encode()) if isinstance(x, dict) else x  # noqa: E731
         for k, v in form_values(op, job.get("form")).items():
             kwargs[snake(k)] = [as_file(x) for x in v] if isinstance(v, list) else as_file(v)
@@ -309,7 +328,7 @@ class BatchClient:
             op = operation(self.spec, job["method"], job["path_tmpl"])
             if op is None:
                 continue
-            values = typed_params(op, {**job["path_params"], **(job["params"] or {})})
+            values = spec_values(op, job)
             values.update(form_values(op, job.get("form")))
             calls.append({"id": job["id"], "operationId": op["operationId"], "params": values, "body": job.get("body"),
                           "hasParams": bool(op["parameters"] or op.get("form") or op.get("requestBody")),
@@ -507,6 +526,13 @@ def main():
                            "headers": {}, "body": b"", "client_error": f"{type(e).__name__}: {e}"}
                 if res is None:
                     row["cells"][n] = "N/A"
+                    continue
+                if res["status"] is None and res.get("client_error") and all(k.startswith("4") for k in scn_eval["expect"]):
+                    # The client refused to send a request the scenario expects aerie to refuse: nothing to judge.
+                    row["cells"][n] = "N/A"
+                    (out / "failures" / f"{job['id']}__{n}.json").write_text(json.dumps({
+                        "scenario": job["id"], "client": n, "na": "the client refuses to send this request",
+                        "client_error": res["client_error"]}, indent=2), encoding="utf-8")
                     continue
                 diffs = evaluate(scn_eval, res)
                 # A refusal proves nothing while the matching success case fails (e.g. nothing seeded, every path 404).

@@ -37,11 +37,13 @@ async function run(c) {
   if (!target) return { id: c.id, status: null, headers: {}, body: '', client_error: `operationId ${c.operationId} not found in generated client` };
   const api = new target[0](new lib.Configuration({ basePath: base, baseOptions: { headers: { Authorization: c.auth, ...(c.headers || {}) } } }));
   const asFile = (v) => (v && typeof v === 'object' && v.__file__ ? new File([v.content], v.__file__, { type: v.type || 'application/octet-stream' }) : v);
-  const params = Object.fromEntries(Object.entries(c.params).map(([k, v]) => [camel(k), Array.isArray(v) ? v.map(asFile) : asFile(v)]));
+  // The compiled method reads requestParameters.<key>: each value goes under the key with the same normalized
+  // name (so "X-Atlassian-Token" finds xAtlassianToken); the body's key is the one that is no spec parameter.
+  const keys = [...api[target[1]].toString().matchAll(/requestParameters\.(\w+)/g)].map((m) => m[1]);
+  const keyFor = (k) => keys.find((x) => norm(x) === norm(k)) || camel(k);
+  const params = Object.fromEntries(Object.entries(c.params).map(([k, v]) => [keyFor(k), Array.isArray(v) ? v.map(asFile) : asFile(v)]));
   if (c.body !== null && c.body !== undefined) {
-    // The compiled method reads requestParameters.<key>; the body's key is the one that is no spec parameter.
-    const keys = [...api[target[1]].toString().matchAll(/requestParameters\.(\w+)/g)].map((m) => m[1]);
-    const spec = new Set((c.specNames || []).map((n) => norm(camel(n))));
+    const spec = new Set((c.specNames || []).map((n) => norm(n)));
     const key = keys.find((k) => !spec.has(norm(k)));
     if (!key) return { id: c.id, status: null, headers: {}, body: '', client_error: 'the generated method takes no request body' };
     params[key] = c.body;
