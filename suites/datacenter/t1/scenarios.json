@@ -2,7 +2,7 @@
   "surface": "datacenter",
   "tier": "t1",
   "specs": ["dc-9.0.1", "dc-9.2.4", "dc-9.5.1", "dc-10.2.20", "dc-11.1.0"],
-  "contracts": ["aerie-dc-contracts-v2"],
+  "contracts": ["aerie-dc-contracts-v3"],
   "fixtures": {
     "lab_home": {"path": "/rest/api/content", "params": {"spaceKey": "LAB", "title": "Lab Home"}, "pick": "results.0.id"},
     "priv_home": {"path": "/rest/api/content", "params": {"spaceKey": "PRIV", "title": "Private Home"}, "pick": "results.0.id"}
