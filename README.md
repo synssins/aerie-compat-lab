@@ -51,12 +51,12 @@ Near the end, a customer runs their own integrations against a staging aerie loa
 
 ## Status
 
-Not built yet. The roadmap starts the lab in Phase 1, with every suite failing until aerie passes it. First tasks:
+Phase 1 in progress. Every suite fails until aerie passes it; that is the expected state. First tasks:
 
-- [ ] `harness/`: start a pinned aerie image and seed it
-- [ ] `clients/generate.sh`: download each pinned spec, check its hash, generate the Java, Python and TypeScript clients
-- [ ] `suites/datacenter/t1`: the first scenarios for content, spaces and search
-- [ ] CI: run the lab on every new aerie image and publish the matrix
+- [ ] `harness/`: start a pinned aerie image and seed it. Compose file and seed script written, not yet run against the image; the seed calls are open gaps until aerie's own API is documented, see [harness/README.md](harness/README.md)
+- [x] `clients/generate.sh`: download each pinned spec, check its hash, generate the Java, Python and TypeScript clients
+- [x] `suites/datacenter/t1`: the first scenarios for content, spaces and search, run by `suites/run.py` with raw HTTP and the generated Python clients
+- [x] CI: `.github/workflows/lab.yml` runs the lab against a given image tag and uploads the matrix (not yet run on GitHub; aerie's image build must send the `aerie-image` dispatch to run it on every new image)
 
 ## License
 
