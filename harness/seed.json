@@ -17,7 +17,7 @@
     {"ref": "priv_home", "space": "PRIV", "title": "Private Home", "body": "<p>private fixture</p>"}
   ],
   "tokens": [
-    {"user": "lab-user", "name": "lab-user-pat"}
+    {"user": "lab-user", "name": "lab-user-pat", "access": "Read"}
   ],
   "oauth_clients": [
     {"name": "lab-client", "redirect_uri": "http://localhost:8765/callback", "pkce": true}
