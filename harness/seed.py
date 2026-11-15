@@ -35,6 +35,9 @@ GAPS = {
     "GAP-HEALTH": "aerie serves no health endpoint (every unknown path returns the web app with 200 text/html); "
                   "readiness is GET /api/v1/setup/status answering 200 JSON.",
 }
+FIXTURE_GAPS = {
+    "GAP-PAGE-PARENT": "aerie nests pages only under folders; fixture pages with children (lab_home) are seeded as Folder.",
+}
 OPEN_SEED_GAPS = {
     "oauth_clients": "aerie's API (contracts-v1) has no call to register an OAuth client; item(s) not seeded.",
 }
@@ -178,12 +181,15 @@ def seed(base, plan, setup_code):
     steps.append(f"spaces: {len(plan['spaces'])} created private (POST /api/v1/spaces), view groups granted Reader (PUT /api/v1/spaces/{{id}}/roles)")
 
     pages = list(expand_pages(plan["pages"]))
+    # aerie nests pages only under folders ("parentId: Must be a folder in this space"), so a fixture page
+    # with children is created as a Folder (GAP-PAGE-PARENT).
+    parents = {p["parent"] for p in pages if p.get("parent")}
     for p in pages:
         parent = ids["pages"][p["parent"]] if p.get("parent") else None
         ids["pages"][p["ref"]] = admin.call("POST", f"/spaces/{ids['spaces'][p['space']]}/pages", {
-            "parentId": parent, "kind": "Page", "title": p["title"], "tags": p.get("labels") or None,
-            "contentJson": content_json(p["body"])})["id"]
-    steps.append(f"pages: {len(pages)} created with parents and labels as tags (POST /api/v1/spaces/{{id}}/pages)")
+            "parentId": parent, "kind": "Folder" if p["ref"] in parents else "Page", "title": p["title"],
+            "tags": p.get("labels") or None, "contentJson": content_json(p["body"])})["id"]
+    steps.append(f"pages: {len(pages)} created with labels as tags, {len(parents)} parent(s) as Folder (POST /api/v1/spaces/{{id}}/pages)")
 
     tokens = {}
     for t in plan["tokens"]:
@@ -216,6 +222,7 @@ def main():
     except SeedError as e:
         error = str(e)
         gaps["GAP-SEED-FAILED"] = error
+    gaps.update(FIXTURE_GAPS)
     for kind, why in OPEN_SEED_GAPS.items():
         if plan.get(kind):
             gaps[f"GAP-SEED-{kind.upper()}"] = why

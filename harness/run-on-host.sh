@@ -70,7 +70,7 @@ say "client generation"
 gen_rc=0
 runner bash clients/generate.sh >reports/generate.log 2>&1 || gen_rc=$?
 grep -E '^(==|   )' reports/generate.log | grep -vE 'hash ok| ok$' || true
-echo "generate.sh exit $gen_rc ($(grep -c ' ok$' reports/generate.log) language builds ok)"
+echo "generate.sh exit $gen_rc ($(grep -cE ' (java|python|typescript-axios) ok$' reports/generate.log) language builds ok)"
 
 say "self-checks"
 runner python -I suites/test_run.py
