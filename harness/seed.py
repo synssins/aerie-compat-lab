@@ -35,12 +35,6 @@ GAPS = {
     "GAP-HEALTH": "aerie serves no health endpoint (every unknown path returns the web app with 200 text/html); "
                   "readiness is GET /api/v1/setup/status answering 200 JSON.",
 }
-FIXTURE_GAPS = {
-    "GAP-PAGE-PARENT": "aerie nests pages only under folders; fixture pages with children (lab_home) are seeded as Folder.",
-}
-OPEN_SEED_GAPS = {
-    "oauth_clients": "aerie's API (contracts-v1) has no call to register an OAuth client; item(s) not seeded.",
-}
 
 
 class SeedError(Exception):
@@ -182,7 +176,8 @@ def seed(base, plan, setup_code):
 
     pages = list(expand_pages(plan["pages"]))
     # aerie nests pages only under folders ("parentId: Must be a folder in this space"), so a fixture page
-    # with children is created as a Folder (GAP-PAGE-PARENT).
+    # with children is created as a Folder; the compatible surface shows folders as pages (contracts-v2,
+    # behaviour/content.md, question Q-0002).
     parents = {p["parent"] for p in pages if p.get("parent")}
     for p in pages:
         parent = ids["pages"][p["parent"]] if p.get("parent") else None
@@ -193,13 +188,32 @@ def seed(base, plan, setup_code):
 
     tokens = {}
     for t in plan["tokens"]:
-        owner = Aerie(base).signin(credentials[t["user"]]["user"], credentials[t["user"]]["password"])
+        # The admin's session already passed its sign-in code; other owners sign in with their password.
+        owner = admin if t["user"] == admin_plan["name"] else Aerie(base).signin(t["user"], credentials[t["user"]]["password"])
         made = owner.call("POST", "/tokens", {"name": t["name"], "kind": "Personal", "days": t.get("days", 30),
-                                              "scopes": [{"spaceId": None, "access": t.get("access", "Read")}]})
-        tokens[t["name"]] = {"user": t["user"], "token": made["token"]}
+                                              "scopes": [{"spaceId": ids["spaces"][t["space"]] if t.get("space") else None,
+                                                          "access": t.get("access", "Read")}]})
+        tokens[t["name"]] = {"user": t["user"], "token": made["token"], "id": made["info"]["id"]}
         ids["tokens"][t["name"]] = made["info"]["id"]
+        if t.get("basic"):
+            # Accounts with sign-in codes are refused for password Basic; they send a token in the password
+            # field instead (contracts-v2, behaviour/identity.md, HTTP Basic).
+            credentials[t["user"]] = dict(credentials[t["user"]], basic_token=made["token"])
     steps.append(f"tokens: {len(plan['tokens'])} personal token(s) created by their owner (POST /api/v1/tokens)")
-    return credentials, tokens, ids, steps
+
+    oauth, oauth_gap = {}, None
+    for c in plan.get("oauth_clients", []):
+        try:
+            made = admin.call("POST", "/admin/oauth/clients", {"name": c["name"], "type": c["type"], "redirectUris": [c["redirect_uri"]],
+                                                               "scopes": c["scopes"], "requirePkce": True, "enabled": True})
+        except SeedError as e:
+            oauth_gap = f"POST /api/v1/admin/oauth/clients (contracts-v2, planned) is not served yet: {e}"[:600]
+            break
+        oauth[c["name"]] = {"clientId": made["client"]["clientId"], "clientSecret": made.get("clientSecret"),
+                            "type": c["type"], "redirect_uri": c["redirect_uri"], "scopes": c["scopes"]}
+    if oauth_gap is None and oauth:
+        steps.append(f"oauth clients: {len(oauth)} registered (POST /api/v1/admin/oauth/clients)")
+    return credentials, tokens, ids, steps, oauth, oauth_gap
 
 
 def main():
@@ -216,25 +230,29 @@ def main():
 
     plan = json.loads((HERE / "seed.json").read_text(encoding="utf-8"))
     gaps = dict(GAPS)
-    credentials, tokens, ids, steps, error = {}, {}, {}, [], None
+    credentials, tokens, ids, steps, oauth, error = {}, {}, {}, [], {}, None
     try:
-        credentials, tokens, ids, steps = seed(base, plan, os.environ.get("AERIE_SETUP_CODE", "").strip())
+        credentials, tokens, ids, steps, oauth, oauth_gap = seed(base, plan, os.environ.get("AERIE_SETUP_CODE", "").strip())
+        if oauth_gap:
+            # Identity is being built in slices; until client registration lands, only the OAuth cases fail.
+            gaps["GAP-SEED-OAUTH_CLIENTS"] = oauth_gap
     except SeedError as e:
         error = str(e)
         gaps["GAP-SEED-FAILED"] = error
-    gaps.update(FIXTURE_GAPS)
-    for kind, why in OPEN_SEED_GAPS.items():
-        if plan.get(kind):
-            gaps[f"GAP-SEED-{kind.upper()}"] = why
 
     missing = {"user": "", "password": ""}
     handoff = {
         "base_url": base,
         # The OAuth client gap does not block suites that use basic auth or tokens.
         "seeded": error is None,
-        "credentials": {"admin": credentials.get("lab-admin", missing), "user": credentials.get("lab-user", missing),
-                        "noaccess": credentials.get("lab-noaccess", missing)},
+        # "admin" is the Basic credential suites use for the administrator: username and a token, because
+        # password Basic is refused for accounts with sign-in codes. "admin-password" is the real password.
+        "credentials": {"admin": {"user": credentials["lab-admin"]["user"], "password": credentials["lab-admin"]["basic_token"]}
+                                 if credentials.get("lab-admin", {}).get("basic_token") else credentials.get("lab-admin", missing),
+                        "admin-password": credentials.get("lab-admin", missing), "user": credentials.get("lab-user", missing),
+                        "noaccess": credentials.get("lab-noaccess", missing), "lockout": credentials.get("lab-lockout", missing)},
         "tokens": tokens,
+        "oauth_clients": oauth,
         # aerie's own ids, nested so they never shadow the suites' vendor-surface fixtures.
         "ids": {"aerie": ids},
         "steps": steps,

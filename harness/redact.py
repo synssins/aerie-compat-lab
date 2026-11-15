@@ -8,7 +8,7 @@ import json
 import sys
 from pathlib import Path
 
-SECRET_FIELDS = {"password", "totp_key", "token"}
+SECRET_FIELDS = {"password", "totp_key", "token", "basic_token", "clientSecret"}
 
 
 def redact(doc):
