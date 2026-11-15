@@ -1,77 +1,90 @@
 name: lab
 
 # Runs the lab against one aerie image and publishes the operation-by-client matrix.
-# Start it by hand with a tag, or from aerie's image build with
-#   repository_dispatch: {event_type: aerie-image, client_payload: {tag: sha-xxxxxxx}}
+# - schedule: every 30 minutes, reads the digest of ghcr.io/synssins/aerie:latest (public, anonymous)
+#   and runs the lab only when no earlier run has tested that digest (a cache entry per tested digest).
+# - workflow_dispatch: by hand with a tag.
+# - repository_dispatch aerie-image: {client_payload: {tag: sha-xxxxxxx}}, if aerie's image build sends it.
 on:
+  schedule:
+    - cron: "*/30 * * * *"
   workflow_dispatch:
     inputs:
       aerie_tag:
-        description: "aerie image tag under test, e.g. sha-cd7b0e8"
+        description: "aerie image tag under test, e.g. sha-cd7b0e8 or latest"
         required: true
+        default: latest
   repository_dispatch:
     types: [aerie-image]
 
 permissions:
   contents: read
 
+concurrency:
+  group: lab
+  cancel-in-progress: false
+
 jobs:
-  datacenter-t1:
+  check:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    outputs:
+      tag: ${{ steps.pick.outputs.tag }}
+      digest: ${{ steps.pick.outputs.digest }}
+      run: ${{ steps.pick.outputs.run == 'true' && steps.tested.outputs.cache-hit != 'true' }}
+    steps:
+      - id: pick
+        env:
+          TAG: ${{ inputs.aerie_tag || github.event.client_payload.tag || 'latest' }}
+        run: |
+          [[ "$TAG" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "invalid aerie tag: '$TAG'"; exit 1; }
+          token=$(curl -fsS "https://ghcr.io/token?scope=repository:synssins/aerie:pull" | jq -r .token)
+          digest=$(curl -fsSI -H "Authorization: Bearer $token" \
+            -H "Accept: application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.docker.distribution.manifest.v2+json" \
+            "https://ghcr.io/v2/synssins/aerie/manifests/$TAG" | tr -d '\r' | awk -F': ' 'tolower($1)=="docker-content-digest"{print $2}')
+          [ -n "$digest" ] || { echo "no digest for ghcr.io/synssins/aerie:$TAG"; exit 1; }
+          echo "ghcr.io/synssins/aerie:$TAG is $digest"
+          { echo "tag=$TAG"; echo "digest=$digest"; echo "run=true"; } >> "$GITHUB_OUTPUT"
+      - id: tested
+        if: github.event_name == 'schedule'
+        uses: actions/cache/restore@v4
+        with:
+          path: .lab-tested
+          key: lab-tested-${{ steps.pick.outputs.digest }}
+          lookup-only: true
+
+  datacenter-t1:
+    needs: check
+    if: needs.check.outputs.run == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
     env:
-      AERIE_TAG: ${{ inputs.aerie_tag || github.event.client_payload.tag }}
-      AERIE_PORT: "8080"
+      AERIE_TAG: ${{ needs.check.outputs.tag }}
+      AERIE_PORT: "18090"
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: "21"
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Check the tag
-        run: |
-          [[ "$AERIE_TAG" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "invalid aerie tag: '$AERIE_TAG'"; exit 1; }
-
-      - name: Generate clients from the pinned specs
-        run: bash clients/generate.sh
-
-      - name: Install suite dependencies
-        run: |
-          pip install -r suites/requirements.txt
-          python -I suites/test_run.py
-          python -I harness/test_seed.py
-
-      - name: Start aerie
-        run: docker compose -f harness/docker-compose.yml up -d aerie
-
-      - name: Seed aerie
-        run: |
-          for _ in $(seq 1 90); do curl -sf -o /dev/null http://localhost:8080/api/v1/setup/status && break; sleep 2; done
-          AERIE_SETUP_CODE="$(docker compose -f harness/docker-compose.yml exec -T aerie cat /app/App_Data/setup-code.txt)"             python -I harness/seed.py --out reports/harness.json
-
-      - name: Run datacenter/t1
-        run: python -I suites/run.py suites/datacenter/t1 --harness reports/harness.json --out reports/datacenter-t1
+      # Starts aerie as compose project aerie-lab, generates and builds the clients, seeds, runs the
+      # suites in the runner container, writes reports/ and removes the project. Suite failures are results.
+      - name: Run the lab
+        run: bash harness/run-lab.sh "$AERIE_TAG"
 
       - name: Publish the matrix
         if: always()
         run: |
-          [ -f reports/datacenter-t1/matrix.md ] && cat reports/datacenter-t1/matrix.md >> "$GITHUB_STEP_SUMMARY" || true
-          docker compose -f harness/docker-compose.yml logs --no-color > reports/aerie.log 2>&1 || true
-          python -I harness/redact.py reports/harness.json || true
+          for m in reports/*/matrix.md; do [ -f "$m" ] && cat "$m" >> "$GITHUB_STEP_SUMMARY"; done
+          [ -f reports/run.json ] && { echo '```json'; cat reports/run.json; echo '```'; } >> "$GITHUB_STEP_SUMMARY" || true
 
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: lab-reports-${{ env.AERIE_TAG }}
+          name: lab-reports-${{ env.AERIE_TAG }}-${{ github.run_id }}
           path: reports/
           if-no-files-found: warn
 
-      - name: Stop aerie
-        if: always()
-        run: docker compose -f harness/docker-compose.yml down -v
+      # Marks the digest as tested, so the schedule does not run it again.
+      - name: Mark the digest tested
+        run: echo "${{ needs.check.outputs.digest }}" > .lab-tested
+      - uses: actions/cache/save@v4
+        with:
+          path: .lab-tested
+          key: lab-tested-${{ needs.check.outputs.digest }}

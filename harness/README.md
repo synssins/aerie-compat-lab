@@ -4,12 +4,13 @@ Starts the aerie container image for the commit under test (`ghcr.io/synssins/ae
 
 | File | What |
 |---|---|
-| `docker-compose.yml` | Compose project `aerie-lab`: the image on `AERIE_PORT` (default 8080) with an empty throwaway data volume, plus the `runner` toolbox (profile `runner`: Python 3.12, Java 17, the suite dependencies) |
+| `docker-compose.yml` | Compose project `aerie-lab`: the image on `AERIE_PORT` with an empty throwaway data volume, plus the `runner` toolbox (profile `runner`: Python 3.12 with the suite dependencies, JDK 17 with Maven, Node with npm) |
 | `seed.json` | The fixture: users, a group, spaces `LAB` and `PRIV`, 14 pages, a personal access token and an OAuth client |
 | `seed.py` | Waits for aerie, seeds `seed.json` through `/api/v1`, writes the hand-off file `reports/harness.json` |
 | `redact.py` | Blanks passwords, sign-in code keys and tokens in the hand-off file before it is kept |
 | `test_seed.py` | Self-check for the sign-in code (RFC 6238 vectors) and the redaction |
-| `run-on-host.sh` | The whole lab on a Docker host with no java or node, see below |
+| `run-lab.sh` | The whole lab in this checkout against one image, needing only docker and curl: used by `run-on-host.sh` and by CI |
+| `run-on-host.sh` | Clones or updates the lab on a Docker host, then runs `run-lab.sh` there |
 
 ## Seeding
 
