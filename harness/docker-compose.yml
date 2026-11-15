@@ -1,0 +1,19 @@
+# Starts the aerie image for the commit under test.
+#   AERIE_TAG=sha-cd7b0e8 docker compose -f harness/docker-compose.yml up -d
+#   python -I harness/seed.py
+#   docker compose -f harness/docker-compose.yml down -v
+# The image declares no HEALTHCHECK, so seed.py waits for it from the host.
+name: aerie-lab
+services:
+  aerie:
+    image: ghcr.io/synssins/aerie:${AERIE_TAG:?set AERIE_TAG to the image tag under test, e.g. sha-cd7b0e8}
+    ports:
+      - "${AERIE_PORT:-8080}:8080"
+    # GAP: the settings aerie needs to bootstrap a first administrator are not known to the lab.
+    # Put the settings the build room documents in harness/aerie.env (git-ignored).
+    env_file:
+      - path: aerie.env
+        required: false
+    volumes:
+      # Anonymous volume over the image's data folder: every run starts empty; `down -v` removes it.
+      - /app/App_Data
