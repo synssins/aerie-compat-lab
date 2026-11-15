@@ -93,9 +93,10 @@ while IFS=, read -r id product version url sha langs; do
     case "$lang" in
       # Cloud v1 has a cache-busting query parameter named "_", which the Python generator leaves without a name.
       python) props="$props,packageName=$pkg"; extra=(--parameter-name-mappings _=underscore_param) ;;
-      # Models with both "links" and "_links" would get two fields named links.
+      # Models with both "links" and "_links" would get two fields named links. Cloud v2's
+      # DatabaseNullLookupValue declares enum: [null], which becomes an empty Java enum that does not compile.
       java) props="$props,invokerPackage=aerie.lab.$pkg,apiPackage=aerie.lab.$pkg.api,modelPackage=aerie.lab.$pkg.model,artifactId=$pkg"
-            extra=(--name-mappings _links=underscoreLinks) ;;
+            extra=(--name-mappings _links=underscoreLinks --schema-mappings DatabaseNullLookupValue=com.google.gson.JsonElement) ;;
       # One request object per call, so the TypeScript runner passes parameters by name. A parameter named
       # "key" (DC 10.x+ watch operations) is shadowed by the generated loop variable of the same name.
       typescript-axios) props="$props,npmName=$pkg,supportsES6=true,useSingleRequestParameter=true"
