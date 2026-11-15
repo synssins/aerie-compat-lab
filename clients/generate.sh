@@ -93,9 +93,13 @@ while IFS=, read -r id product version url sha langs; do
     case "$lang" in
       # Cloud v1 has a cache-busting query parameter named "_", which the Python generator leaves without a name.
       python) props="$props,packageName=$pkg"; extra=(--parameter-name-mappings _=underscore_param) ;;
-      java) props="$props,invokerPackage=aerie.lab.$pkg,apiPackage=aerie.lab.$pkg.api,modelPackage=aerie.lab.$pkg.model,artifactId=$pkg" ;;
-      # One request object per call, so the TypeScript runner passes parameters by name.
-      typescript-axios) props="$props,npmName=$pkg,supportsES6=true,useSingleRequestParameter=true" ;;
+      # Models with both "links" and "_links" would get two fields named links.
+      java) props="$props,invokerPackage=aerie.lab.$pkg,apiPackage=aerie.lab.$pkg.api,modelPackage=aerie.lab.$pkg.model,artifactId=$pkg"
+            extra=(--name-mappings _links=underscoreLinks) ;;
+      # One request object per call, so the TypeScript runner passes parameters by name. A parameter named
+      # "key" (DC 10.x+ watch operations) is shadowed by the generated loop variable of the same name.
+      typescript-axios) props="$props,npmName=$pkg,supportsES6=true,useSingleRequestParameter=true"
+            extra=(--parameter-name-mappings key=keyParam) ;;
     esac
     log="$build/$lang-$id.log"
     # The DC files declare some unused RestList* schemas as "type: array" with properties; without the
