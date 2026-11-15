@@ -56,7 +56,8 @@ Phase 1 in progress. Every suite fails until aerie passes it; that is the expect
 - [x] `harness/`: start a pinned aerie image and seed it through aerie's own API (contracts-v1); `harness/run-on-host.sh` runs the whole lab on a Docker host. Open gaps (OAuth client, health endpoint) in [harness/README.md](harness/README.md)
 - [x] `clients/generate.sh`: download each pinned spec, check its hash, generate the Java, Python and TypeScript clients
 - [x] `suites/datacenter/t1`: the first scenarios for content, spaces and search, run by `suites/run.py` with raw HTTP and the generated Python clients
-- [x] CI: `.github/workflows/lab.yml` runs the lab against a given image tag and uploads the matrix (not yet run on GitHub; aerie's image build must send the `aerie-image` dispatch to run it on every new image)
+- [x] Java and TypeScript client runners: every operation is called by Python, Java and TypeScript clients, plus response-schema validation against aerie's `contracts-v1` Data Center contract
+- [x] CI: `.github/workflows/lab.yml` checks the digest of `ghcr.io/synssins/aerie:latest` every 30 minutes and runs the lab when it has not tested that digest; it also runs by hand with a tag
 
 ## License
 
