@@ -40,17 +40,18 @@ echo "lab commit $(git rev-parse --short HEAD)"
 
 export AERIE_TAG=$TAG AERIE_PORT=$PORT LAB_UID=$(id -u) LAB_GID=$(id -g)
 dc() { docker compose -p "$PROJECT" -f harness/docker-compose.yml --profile runner "$@"; }
-runner() { dc run --rm -T runner "$@"; }
+# </dev/null: when this script arrives on stdin (ssh ... bash -s), docker would read the rest of it.
+runner() { dc run --rm -T runner "$@" </dev/null; }
 teardown() {
   say "teardown of project $PROJECT"
-  dc down -v --remove-orphans >/dev/null 2>&1 || true
+  dc down -v --remove-orphans </dev/null >/dev/null 2>&1 || true
   left=$(docker ps -aq --filter "label=com.docker.compose.project=$PROJECT")
   [ -z "$left" ] && echo "no $PROJECT containers left" || echo "WARNING: $PROJECT containers left: $left" >&2
 }
 trap teardown EXIT
 
 # A clean slate: an aborted earlier run may have left the project behind.
-dc down -v --remove-orphans >/dev/null 2>&1 || true
+dc down -v --remove-orphans </dev/null >/dev/null 2>&1 || true
 if (ss -ltn 2>/dev/null || netstat -ltn 2>/dev/null) | awk '{print $4}' | grep -qE "[:.]$PORT\$"; then
   echo "host port $PORT is in use; set AERIE_PORT to a free one" >&2
   exit 1
@@ -58,10 +59,10 @@ fi
 rm -rf reports && mkdir -p reports
 
 say "runner image"
-dc build -q runner
+dc build -q runner </dev/null
 
 say "image ghcr.io/synssins/aerie:$TAG"
-dc pull -q aerie
+dc pull -q aerie </dev/null
 digest=$(docker image inspect -f '{{index .RepoDigests 0}}' "ghcr.io/synssins/aerie:$TAG")
 echo "digest $digest"
 
@@ -76,13 +77,13 @@ runner python -I suites/test_run.py
 runner python -I harness/test_seed.py
 
 say "start aerie on host port $PORT"
-dc up -d aerie
+dc up -d aerie </dev/null
 for _ in $(seq 1 90); do
   curl -sf -o /dev/null "http://localhost:$PORT/api/v1/setup/status" && break
   sleep 2
 done
 # The remote setup code only exists inside this run's throwaway container; it is never written to disk.
-AERIE_SETUP_CODE=$(dc exec -T aerie cat /app/App_Data/setup-code.txt 2>/dev/null || true)
+AERIE_SETUP_CODE=$(dc exec -T aerie cat /app/App_Data/setup-code.txt </dev/null 2>/dev/null || true)
 export AERIE_SETUP_CODE
 
 say "seed"
@@ -98,7 +99,7 @@ for suite in $SUITES; do
   tail -n 3 "reports/${suite//\//-}.log"
 done
 
-dc logs --no-color aerie >reports/aerie.log 2>&1 || true
+dc logs --no-color aerie </dev/null >reports/aerie.log 2>&1 || true
 runner python -I harness/redact.py reports/harness.json
 cat >reports/run.json <<EOF
 {"tag": "$TAG", "digest": "$digest", "lab_commit": "$(git rev-parse HEAD)", "host_port": $PORT,
