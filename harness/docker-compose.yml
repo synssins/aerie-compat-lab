@@ -3,7 +3,8 @@
 #   AERIE_SETUP_CODE="$(docker compose -p aerie-lab -f harness/docker-compose.yml exec -T aerie cat /app/App_Data/setup-code.txt)" python -I harness/seed.py
 #   docker compose -p aerie-lab -f harness/docker-compose.yml --profile runner down -v
 # The image declares no HEALTHCHECK, so seed.py waits for GET /api/v1/setup/status.
-# The "runner" service (profile runner) is the toolbox run-on-host.sh uses on a host without java or python deps.
+# The "runner" service (profile runner) is the toolbox run-lab.sh uses, so the host needs only docker:
+# Python 3.12 with the suite dependencies, JDK 17 with Maven, Node with npm.
 name: aerie-lab
 services:
   aerie:
@@ -25,7 +26,7 @@ services:
       context: ../suites
       dockerfile_inline: |
         FROM python:3.12-slim-bookworm
-        RUN apt-get update && apt-get install -y --no-install-recommends openjdk-17-jre-headless curl ca-certificates \
+        RUN apt-get update && apt-get install -y --no-install-recommends openjdk-17-jdk-headless maven nodejs npm curl ca-certificates \
             && rm -rf /var/lib/apt/lists/*
         COPY requirements.txt /tmp/requirements.txt
         RUN pip install --no-cache-dir -r /tmp/requirements.txt
