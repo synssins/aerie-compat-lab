@@ -2,7 +2,7 @@
   "surface": "datacenter",
   "tier": "t1",
   "specs": ["dc-9.0.1", "dc-9.2.4", "dc-9.5.1", "dc-10.2.20", "dc-11.1.0"],
-  "contracts": ["aerie-dc-contracts-v4"],
+  "contracts": ["aerie-dc-contracts-v5"],
   "admin_as": "token:lab-admin-pat",
   "_admin_as": "Credential for fixture lookups and setup steps: the administrator's personal access token as a bearer token. Basic with a token in the password field is tested by suites/auth.",
   "fixtures": {
@@ -159,7 +159,7 @@
     {"id": "user.list.success", "op": "GET /rest/api/user/list", "as": "token:lab-admin-pat", "expect": {"200": [["len_ge", "results", 4], ["exists", "results.0.username"]]}},
     {"id": "user.memberof.success", "op": "GET /rest/api/user/memberof", "as": "token:lab-admin-pat", "params": {"username": "lab-user"}, "expect": {"200": [["eq", "results.0.name", "lab-readers"], ["eq", "results.0.type", "group"]]}},
     {"id": "server.info.success", "op": "GET /rest/api/server-information", "as": "user", "expect": {"200": [["exists", "version"], ["exists", "buildNumber"], ["exists", "baseUrl"]]}},
-    {"id": "longtask.list.success", "op": "GET /rest/api/longtask", "as": "token:lab-admin-pat", "setup": [{"op": "POST /rest/api/space", "body": {"key": "LL{cx}", "name": "Zz LL {cx}"}}, {"op": "DELETE /rest/api/space/{spaceKey}", "path": {"spaceKey": "LL{cx}"}}], "expect": {"200": [["len_ge", "results", 1]]}},
-    {"id": "longtask.get.success", "op": "GET /rest/api/longtask/{id}", "as": "token:lab-admin-pat", "setup": [{"op": "POST /rest/api/space", "body": {"key": "LT{cx}", "name": "Zz LT {cx}"}}, {"op": "DELETE /rest/api/space/{spaceKey}", "path": {"spaceKey": "LT{cx}"}, "save": {"task": "id"}}], "path": {"id": "{task}"}, "expect": {"200": [["eq", "id", "{task}"], ["exists", "percentageComplete"]]}}
+    {"id": "longtask.list.success", "op": "GET /rest/api/longtask", "as": "token:lab-admin-pat", "setup": [{"op": "POST /rest/api/space", "body": {"key": "LL{cx}", "name": "Zz LL {cx}"}}, {"op": "DELETE /rest/api/space/{spaceKey}", "path": {"spaceKey": "LL{cx}"}}], "note": "A message object's args is always empty; the text is in translation (question Q-0019, contracts-v5, behaviour/common.md).", "expect": {"200": [["len_ge", "results", 1], ["len_le", "results.0.name.args", 0], ["exists", "results.0.name.translation"]]}},
+    {"id": "longtask.get.success", "op": "GET /rest/api/longtask/{id}", "as": "token:lab-admin-pat", "setup": [{"op": "POST /rest/api/space", "body": {"key": "LT{cx}", "name": "Zz LT {cx}"}}, {"op": "DELETE /rest/api/space/{spaceKey}", "path": {"spaceKey": "LT{cx}"}, "save": {"task": "id"}}], "path": {"id": "{task}"}, "note": "A message object's args is always empty; the text is in translation (question Q-0019, contracts-v5, behaviour/common.md).", "expect": {"200": [["eq", "id", "{task}"], ["exists", "percentageComplete"], ["len_le", "name.args", 0], ["exists", "name.translation"]]}}
   ]
 }
