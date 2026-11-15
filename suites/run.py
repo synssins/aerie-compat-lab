@@ -54,6 +54,8 @@ def run_checks(doc, checks):
         val = get_path(doc, path) if doc is not None else MISSING
         if kind == "exists":
             ok = val is not MISSING
+        elif kind == "missing":
+            ok = val is MISSING
         elif kind == "eq":
             ok = val == args[0]
         elif kind in ("len_le", "len_ge"):
@@ -296,21 +298,37 @@ def evaluate(scn, res):
     return diffs
 
 
+def lookup(base, cred, path, params, pick):
+    try:
+        _, status, _, body = http_call(base, cred, path, {}, params)
+        return (get_path(json.loads(body), pick) if status == 200 else MISSING), status
+    except Exception as e:
+        return MISSING, type(e).__name__
+
+
 def resolve_fixtures(suite, handoff, base):
+    """Each fixture by its lookup on the compatible surface; failing that, by the aerie UUID from seeding,
+    which the surface accepts in place of a content id and answers with the decimal id (contracts-v2,
+    behaviour/common.md, Identifiers). If even that fails the UUID itself is used, so the calls still name
+    the right object."""
     found, notes = dict(handoff.get("ids", {})), []
+    admin = handoff["credentials"]["admin"]
     for name, how in suite.get("fixtures", {}).items():
         if name in found:
             continue
-        try:
-            _, status, _, body = http_call(base, handoff["credentials"]["admin"], how["path"], {}, how["params"])
-            val = get_path(json.loads(body), how["pick"]) if status == 200 else MISSING
-        except Exception as e:
-            status, val = f"{type(e).__name__}", MISSING
-        if val is MISSING:
-            found[name] = f"UNRESOLVED-{name}"
-            notes.append(f"fixture {name} not resolved (lookup status {status})")
-        else:
+        val, status = lookup(base, admin, how["path"], how["params"], how["pick"])
+        if val is not MISSING:
             found[name] = val
+            continue
+        uuid = get_path(handoff, f"ids.aerie.pages.{name}")
+        if uuid is MISSING:
+            found[name] = f"UNRESOLVED-{name}"
+            notes.append(f"fixture {name} not resolved (lookup status {status}, no aerie id from seeding)")
+            continue
+        val, by_uuid = lookup(base, admin, "/rest/api/content/{id}".replace("{id}", uuid), {}, "id")
+        found[name] = val if val is not MISSING else uuid
+        notes.append(f"fixture {name}: lookup status {status}; " + (f"decimal id {val} read by aerie id" if val is not MISSING
+                     else f"using aerie id {uuid} (read by it: status {by_uuid})"))
     return found, notes
 
 
@@ -324,9 +342,18 @@ def main():
     args = ap.parse_args()
 
     suite_dir = Path(args.suite)
-    suite = json.loads((suite_dir / "scenarios.json").read_text(encoding="utf-8"))
     handoff = json.loads(Path(args.harness).read_text(encoding="utf-8"))
     base = handoff["base_url"].rstrip("/")
+    if (suite_dir / "cases.py").is_file():
+        # A flow suite: multi-step cases written in Python (suites/auth), run with raw HTTP.
+        sys.path.insert(0, str(suite_dir))
+        cases = importlib.import_module("cases")
+        out = Path(args.out or f"reports/{cases.SUITE['surface']}-{cases.SUITE['tier']}")
+        (out / "failures").mkdir(parents=True, exist_ok=True)
+        fixtures, notes = resolve_fixtures(cases.SUITE, handoff, base)
+        rows = cases.run(base, handoff, fixtures, out / "failures")
+        return write_matrix(out, cases.SUITE, base, ["http"], rows, notes, {})
+    suite = json.loads((suite_dir / "scenarios.json").read_text(encoding="utf-8"))
     out = Path(args.out or f"reports/{suite['surface']}-{suite['tier']}")
     (out / "failures").mkdir(parents=True, exist_ok=True)
 
@@ -390,6 +417,10 @@ def main():
                 }, indent=2), encoding="utf-8")
         rows.append(row)
 
+    return write_matrix(out, suite, base, names, rows, notes, setup_errors)
+
+
+def write_matrix(out, suite, base, names, rows, notes, setup_errors):
     (out / "matrix.json").write_text(json.dumps({"base_url": base, "clients": names, "setup_errors": setup_errors,
                                                  "notes": notes, "rows": rows}, indent=2), encoding="utf-8")
     md = [f"# {suite['surface']} {suite['tier']} against {base}", ""]
@@ -400,7 +431,8 @@ def main():
     summary = {k: cells.count(k) for k in ("PASS", "FAIL", "BLOCKED", "ERROR", "N/A")}
     md += ["", "Totals: " + ", ".join(f"{k} {v}" for k, v in summary.items()),
            "", "BLOCKED: the refusal case answered as expected, but its success case failed, so it proves nothing yet.",
-           "ERROR: no answer reached the client (transport or setup); a 2xx the client rejects is a FAIL."]
+           "ERROR: no answer reached the client (transport or setup); a 2xx the client rejects is a FAIL.",
+           "N/A: the operation is not in that spec version, or the case cannot be run yet (its note says why)."]
     (out / "matrix.md").write_text("\n".join(md) + "\n", encoding="utf-8")
     print("\n".join(md))
     return 0 if summary["FAIL"] == summary["BLOCKED"] == summary["ERROR"] == 0 else 1

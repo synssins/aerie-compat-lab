@@ -6,13 +6,13 @@
 # Used by run-on-host.sh on the Docker host and by .github/workflows/lab.yml.
 #
 # Usage: bash harness/run-lab.sh [image-tag]          (default tag: latest)
-# Settings (environment): AERIE_PORT (default 18090; never 8080 or 8081), SUITES (default datacenter/t1)
+# Settings (environment): AERIE_PORT (default 18090; never 8080 or 8081), SUITES (default "datacenter/t1 auth")
 # Exit code: 0 when the harness worked (suite failures are results, not harness errors), 1 otherwise.
 set -euo pipefail
 
 TAG=${1:-${AERIE_TAG:-latest}}
 PORT=${AERIE_PORT:-18090}
-SUITES=${SUITES:-datacenter/t1}
+SUITES=${SUITES:-datacenter/t1 auth}  # auth last: it locks an account on purpose
 PROJECT=aerie-lab
 
 [[ "$TAG" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "invalid aerie tag: '$TAG'" >&2; exit 1; }
@@ -84,10 +84,13 @@ for suite in $SUITES; do
 done
 
 dc logs --no-color aerie </dev/null >reports/aerie.log 2>&1 || true
+# auth.audit.no_secrets: no token or code may appear in aerie's log beyond its short prefix.
+secrets_in_log=$(grep -cE 'kb[tor]_[A-Za-z0-9_-]{12,}' reports/aerie.log || true)
+echo "secrets in aerie's log: $secrets_in_log"
 runner python -I harness/redact.py reports/harness.json
 cat >reports/run.json <<EOF
 {"tag": "$TAG", "digest": "$digest", "lab_commit": "$(git rev-parse HEAD 2>/dev/null || echo unknown)", "host_port": $PORT,
- "generate_exit": $gen_rc, "seed_exit": $seed_rc, "suites_exit": $suite_rc, "finished": "$(date -u +%FT%TZ)"}
+ "generate_exit": $gen_rc, "seed_exit": $seed_rc, "suites_exit": $suite_rc, "audit_scan_hits": $secrets_in_log, "finished": "$(date -u +%FT%TZ)"}
 EOF
 cat reports/run.json
 [ "$seed_rc" = 0 ] && [ "$gen_rc" = 0 ]

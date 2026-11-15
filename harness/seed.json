@@ -2,14 +2,15 @@
   "users": [
     {"name": "lab-admin", "display": "Lab Admin", "admin": true},
     {"name": "lab-user", "display": "Lab User", "groups": ["lab-readers"]},
-    {"name": "lab-noaccess", "display": "Lab No Access"}
+    {"name": "lab-noaccess", "display": "Lab No Access"},
+    {"name": "lab-lockout", "display": "Lab Lockout", "note": "only for the auth suite's lockout case, which locks it"}
   ],
   "groups": [
     {"name": "lab-readers"}
   ],
   "spaces": [
-    {"key": "LAB", "name": "Lab", "description": "Lab fixture space", "view": ["lab-readers"], "homepage": "Lab Home"},
-    {"key": "PRIV", "name": "Private", "description": "Only lab-admin may view", "view": [], "homepage": "Private Home"}
+    {"key": "LAB", "name": "Lab", "description": "Lab fixture space", "view": ["lab-readers"]},
+    {"key": "PRIV", "name": "Private", "description": "Only lab-admin may view", "view": []}
   ],
   "pages": [
     {"ref": "lab_home", "space": "LAB", "title": "Lab Home", "body": "<p>lab fixture</p>", "labels": ["lab-t1"]},
@@ -17,9 +18,14 @@
     {"ref": "priv_home", "space": "PRIV", "title": "Private Home", "body": "<p>private fixture</p>"}
   ],
   "tokens": [
-    {"user": "lab-user", "name": "lab-user-pat", "access": "Read"}
+    {"user": "lab-user", "name": "lab-user-pat", "access": "Read"},
+    {"user": "lab-user", "name": "lab-user-pat-write", "access": "Write"},
+    {"user": "lab-admin", "name": "lab-admin-pat", "access": "Write", "basic": true},
+    {"user": "lab-admin", "name": "lab-admin-pat-read", "access": "Read"},
+    {"user": "lab-admin", "name": "lab-admin-pat-lab", "access": "Read", "space": "LAB"}
   ],
   "oauth_clients": [
-    {"name": "lab-client", "redirect_uri": "http://localhost:8765/callback", "pkce": true}
+    {"name": "lab-public", "type": "public", "redirect_uri": "http://127.0.0.1:8765/callback", "scopes": ["READ", "WRITE"]},
+    {"name": "lab-confidential", "type": "confidential", "redirect_uri": "http://127.0.0.1:8765/callback", "scopes": ["READ", "WRITE"]}
   ]
 }
