@@ -22,7 +22,7 @@ Every lab run on the Docker host (`harness/run-on-host.sh`, which sets `ZAP=1`) 
      - any 2xx for a role other than the administrator on `/api/v1/admin/`;
      - any 2xx for a role other than the administrator on `PRIV` or its page.
    - Writes one Automation Framework plan per role.
-2. **One ZAP container per role**, in this order: anonymous, reader, contributor, supervisor, owner, admin. The administrator comes last because its scan may change settings or objects. Each plan has these jobs:
+2. **One ZAP container per role**, each followed by `scan.py after`. That step checks the role's session still works and keeps the text around the evidence of each High and Medium GET for triage. The roles run in this order: anonymous, reader, contributor, supervisor, owner, admin. The administrator comes last because its scan may change settings or objects. Each plan has these jobs:
    - `insights` with `exitAutoLevel` blank. Otherwise ZAP's Insights add-on ends the plan at its "100% authentication failures" insight, which an active scan of refused requests always raises.
    - `replacer`, which adds the role's session cookie and `X-Atlassian-Token: no-check` to every request.
    - `openapi` imports of both definitions.
@@ -42,7 +42,7 @@ Every lab run on the Docker host (`harness/run-on-host.sh`, which sets `ZAP=1`) 
 
 ## Not scanned
 
-These are excluded, because they would end the scan's own session or turn off password sign-in for every account:
+These are excluded from the scan context and removed from the definitions ZAP imports. They would end the scan's own session or turn off password sign-in for every account. ZAP's OpenAPI import sends every operation in a definition and ignores the context's exclusions:
 
 - `/api/v1/auth/signout`
 - `/api/v1/admin/auth/local/disable`
@@ -63,7 +63,8 @@ The web app is a single-page app. The traditional spider and the passive scan co
 The gate is **FAIL** in these cases:
 
 - a High or Medium instance matches no entry in [baseline.json](baseline.json);
-- a role produced no report.
+- a role produced no report;
+- a role's session no longer works right after its scan, because its scan then ran at least partly signed out.
 
 Triaged entries carry one of these verdicts:
 

@@ -39,7 +39,7 @@ docker compose -p aerie-lab -f harness/docker-compose.yml --profile runner down 
 
 ## Running on a Docker host
 
-`run-on-host.sh` needs only docker, git and curl on the host. It clones or updates the lab under `~/aerie-compat-lab`, starts the image as compose project `aerie-lab` on host port 18090, seeds it, runs `clients/generate.sh` and the suites in the `runner` container, writes `reports/` (matrix, failures, generation and aerie logs, redacted hand-off, `run.json` with the image digest), and removes the project's containers, network and volume. It never uses host ports 8080 or 8081 and touches nothing outside its project and its checkout.
+`run-on-host.sh` needs only docker, git and curl on the host. It clones or updates the lab under `~/aerie-compat-lab`, starts the image as compose project `aerie-lab` on host port 18090, seeds it, runs `clients/generate.sh` and the suites in the `runner` container, writes `reports/` (matrix, failures, generation and aerie logs, redacted hand-off, `run.json` with the image digest), and removes the project's containers, networks and volume. After the suites it runs the `security/zap` stage, a full OWASP ZAP scan of the lab's aerie under every role on an internal network ([security/zap/README.md](../security/zap/README.md)); `ZAP=0` skips it, and `run-lab.sh` alone (CI) skips it unless `ZAP=1`. It never uses host ports 8080 or 8081 and touches nothing outside its project and its checkout.
 
 ```bash
 ssh docker-host 'bash -s -- latest' < harness/run-on-host.sh

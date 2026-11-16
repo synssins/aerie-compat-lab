@@ -48,6 +48,8 @@ SCAN_SPACE = "scan"
 ROLES = [("anonymous", None, None), ("reader", "lab-user", "Reader"), ("contributor", "lab-contributor", "Contributor"),
          ("supervisor", "lab-supervisor", "Supervisor"), ("owner", "lab-owner", "Owner"), ("admin", "lab-admin", None)]
 # Never scanned: they would end the scan's own session or switch password sign-in off for every account.
+# They are also taken out of the definitions ZAP imports, because the OpenAPI import sends every operation
+# regardless of the context's exclusions (a run on 2026-11-16 lost each role's session that way).
 EXCLUDE = [r".*/api/v1/auth/signout.*", r".*/api/v1/admin/auth/local/disable.*"]
 RISKS = ["High", "Medium", "Low", "Informational"]
 CONFIDENCES = ["Confirmed", "High", "Medium", "Low", "False Positive"]
@@ -224,6 +226,7 @@ def prep(args):
            "group": aid["groups"]["lab-readers"], "token": aid["tokens"]["lab-admin-pat-lab"]}
     specs = contract_definitions(work)
     for name, spec in specs.items():
+        spec["paths"] = {k: v for k, v in spec["paths"].items() if not any(re.fullmatch(x, k) for x in EXCLUDE)}
         point_at(spec, ids)
         (work / f"{name}.json").write_text(json.dumps(spec), encoding="utf-8")
     findings, calls = access_check(base, sessions, specs, ids)
@@ -265,7 +268,7 @@ def after(args):
                 if i.get("method") == "GET" and i.get("evidence") and i["uri"] not in result["excerpts"]:
                     status, body = get(i["uri"], cookie)
                     at = body.find(i["evidence"])
-                    result["excerpts"][i["uri"]] = f"HTTP {status}: " + (body[max(0, at - 200):at + 200] if at >= 0 else "(evidence no longer in the answer)")
+                    result["excerpts"][i["uri"]] = f"HTTP {status}: " + (body[max(0, at - 200):at + 200] if at >= 0 else "(evidence not in a fresh answer) " + body[:300])
     (work / f"after-{args.role}.json").write_text(json.dumps(result), encoding="utf-8")
 
 
@@ -318,8 +321,9 @@ def report(args):
             if inst["role"] == role and inst["uri"] in after.get("excerpts", {}):
                 inst["response_excerpt"] = after["excerpts"][inst["uri"]]
     untriaged = [i for i in instances if i["triage"] == "untriaged"]
-    gate = "FAIL" if untriaged or missing else "PASS"
-    summary = {"gate": gate, "untriaged": len(untriaged), "roles_without_report": missing, "seconds": times,
+    lost = [r for r, status in alive.items() if status != 200]  # its scan ran, at least partly, signed out
+    gate = "FAIL" if untriaged or missing or lost else "PASS"
+    summary = {"gate": gate, "untriaged": len(untriaged), "roles_without_report": missing, "roles_signed_out": lost, "seconds": times,
                "session_after_scan": alive, **{k: prepped[k] for k in ("contract", "operations", "token_closed_operations", "excluded", "roles", "access_check_calls")},
                "counts": counts, "high_medium": instances}
     text = scrub(json.dumps(summary, indent=2), secrets)
@@ -338,7 +342,8 @@ def report(args):
 def matrix(s):
     rows = ["# security/zap", "",
             f"Gate: **{s['gate']}** ({s['untriaged']} High or Medium not in `security/zap/baseline.json`"
-            + (f"; no ZAP report for {', '.join(s['roles_without_report'])}" if s["roles_without_report"] else "") + ")", "",
+            + (f"; no ZAP report for {', '.join(s['roles_without_report'])}" if s["roles_without_report"] else "")
+            + (f"; signed out by the end of its scan: {', '.join(s['roles_signed_out'])}" if s["roles_signed_out"] else "") + ")", "",
             f"Contract `{s['contract']}`: {s['operations']} operations; {s['token_closed_operations']} are closed to tokens "
             "(`x-kb-api-token: closed`), so every role scans with a web session. Not scanned: "
             + ", ".join(f"`{x}`" for x in s["excluded"]) + ".", "",
