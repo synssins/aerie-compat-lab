@@ -1,0 +1,4 @@
+{
+  "about": "Triaged High and Medium alerts of the security/zap stage. An instance matches an entry when pluginid is equal, uri and param fully match the regexes, and its role is in roles (all roles when roles is left out). verdict is 'false positive', 'real' or 'build room'. A High or Medium instance that matches no entry makes the stage FAIL.",
+  "triaged": []
+}

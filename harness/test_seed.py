@@ -3,7 +3,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from redact import redact  # noqa: E402
+from redact import redact, scrub  # noqa: E402
 from seed import content_json, totp  # noqa: E402
 
 # RFC 6238 appendix B, SHA-1 secret "12345678901234567890", T=59 s -> 94287082 (last 6 digits).
@@ -14,4 +14,5 @@ assert redact({"credentials": {"admin": {"user": "a", "password": "p", "totp_key
                "tokens": {"t": {"user": "u", "token": "kbt_x"}}}) == {
     "credentials": {"admin": {"user": "a", "password": "***", "totp_key": "***"}},
     "tokens": {"t": {"user": "u", "token": "***"}}}
+assert scrub("pw kbt_ABCDEFGHIJKLMNOP kbo_short", ["pw"]) == "*** kbt_ABCD*** kbo_short"
 print("harness self-check ok")

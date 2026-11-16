@@ -5,10 +5,13 @@ Generated passwords, sign-in code keys and tokens only work inside the throwaway
 stay out of artifacts anyway.
 """
 import json
+import re
 import sys
 from pathlib import Path
 
 SECRET_FIELDS = {"password", "totp_key", "token", "basic_token", "clientSecret"}
+# aerie's tokens: kbt_ personal, kbo_ OAuth access, kbr_ OAuth refresh; the short prefix may stay.
+TOKEN = re.compile(r"(kb[tor]_[A-Za-z0-9_-]{4})[A-Za-z0-9_-]{8,}")
 
 
 def redact(doc):
@@ -17,6 +20,13 @@ def redact(doc):
     if isinstance(doc, list):
         return [redact(v) for v in doc]
     return doc
+
+
+def scrub(text, secrets=()):
+    """Blanks every known secret value, and every aerie token beyond its short prefix, in free text."""
+    for s in sorted(filter(None, secrets), key=len, reverse=True):
+        text = text.replace(s, "***")
+    return TOKEN.sub(r"\1***", text)
 
 
 if __name__ == "__main__":

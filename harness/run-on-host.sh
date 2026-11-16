@@ -6,7 +6,8 @@
 # Usage on the host:         bash run-on-host.sh [image-tag]          (default tag: latest)
 # From a workstation:        ssh docker-host 'bash -s -- latest' < harness/run-on-host.sh
 # Settings (environment):    AERIE_PORT (default 18090; never 8080 or 8081), LAB_DIR (default ~/aerie-compat-lab),
-#                            LAB_REPO, LAB_REF (branch to test, default main), SUITES (default "datacenter/t1 auth")
+#                            LAB_REPO, LAB_REF (branch to test, default main), SUITES (default "datacenter/t1 auth"),
+#                            ZAP (default 1 here: the security/zap stage scans every image, security/zap/README.md)
 # Exit code: 0 when the harness worked (suite failures are results, not harness errors), 1 otherwise.
 # It only ever touches the compose project aerie-lab and files under $LAB_DIR.
 set -euo pipefail
@@ -31,4 +32,4 @@ else
 fi
 cd "$LAB_DIR"
 echo "lab commit $(git rev-parse --short HEAD)"
-exec bash harness/run-lab.sh "$TAG"
+ZAP=${ZAP:-1} exec bash harness/run-lab.sh "$TAG"
