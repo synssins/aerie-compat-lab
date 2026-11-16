@@ -82,7 +82,7 @@ def contract_definitions(work):
     with tarfile.open(fileobj=io.BytesIO(raw)) as tar:
         for name in ("aerie", "datacenter"):
             src = work / f"{name}.yaml"
-            src.write_bytes(tar.extractfile(f"{name}/openapi.yaml").read())
+            src.write_bytes(tar.extractfile(f"./{name}/openapi.yaml").read())
             subprocess.run(["java", "-jar", str(jar), "generate", "-i", str(src), "-g", "openapi", "-o", str(work / name)],
                            check=True, stdout=subprocess.DEVNULL)
             out[name] = json.loads((work / name / "openapi.json").read_text(encoding="utf-8"))
