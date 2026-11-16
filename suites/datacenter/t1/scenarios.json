@@ -2,7 +2,7 @@
   "surface": "datacenter",
   "tier": "t1",
   "specs": ["dc-9.0.1", "dc-9.2.4", "dc-9.5.1", "dc-10.2.20", "dc-11.1.0"],
-  "contracts": ["aerie-dc-contracts-v5"],
+  "contracts": ["aerie-dc-contracts-v6"],
   "admin_as": "token:lab-admin-pat",
   "_admin_as": "Credential for fixture lookups and setup steps: the administrator's personal access token as a bearer token. Basic with a token in the password field is tested by suites/auth.",
   "fixtures": {

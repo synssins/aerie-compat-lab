@@ -259,7 +259,8 @@ def main():
         "credentials": {"admin": {"user": credentials["lab-admin"]["user"], "password": credentials["lab-admin"]["basic_token"]}
                                  if credentials.get("lab-admin", {}).get("basic_token") else credentials.get("lab-admin", missing),
                         "admin-password": credentials.get("lab-admin", missing), "user": credentials.get("lab-user", missing),
-                        "noaccess": credentials.get("lab-noaccess", missing), "lockout": credentials.get("lab-lockout", missing)},
+                        "noaccess": credentials.get("lab-noaccess", missing), "lockout": credentials.get("lab-lockout", missing),
+                        "codes": credentials.get("lab-codes", missing)},
         "tokens": tokens,
         "oauth_clients": oauth,
         # aerie's own ids, nested so they never shadow the suites' vendor-surface fixtures.

@@ -280,17 +280,35 @@ def _(ctx):
 
 @case("auth.basic.codes_exempt.ok", 1, ["auth.basic.codes_on.refused"])
 def _(ctx):
+    # contracts-v6 identity-plan.md slice 1: a user who is not an administrator turns codes on, is refused on
+    # password Basic, is exempted by an administrator (204) and then gets 200.
+    c = ctx.cred("codes")
+    user_id = ctx.h["ids"]["aerie"]["users"][c["user"]]
+    try:
+        me = Aerie(ctx.base).signin(c["user"], c["password"])
+        key = me.call("POST", "/auth/codes/key", {})["key"]
+        me.call("POST", "/auth/codes", {"code": totp(key)})
+    except SeedError as e:
+        raise Fail(f"{c['user']} turning sign-in codes on failed: {e}")
+    rest_error(ctx.req("GET", "/rest/api/user/current", auth=basic(c["user"], c["password"])), 401)
+    try:
+        ctx.session("admin-password").call("PUT", f"/admin/users/{user_id}/codes/exempt", {"exempt": True}, ok=(204,))
+    except SeedError as e:
+        raise Fail(f"exempting {c['user']} did not answer 204: {e}")
+    expect_user(ctx, basic(c["user"], c["password"]), c["user"], "password Basic for an exempted user with codes on")
+
+
+@case("auth.basic.codes_exempt.admin_refused", 1, ["auth.basic.codes_on.refused"])
+def _(ctx):
+    # Q-0020 (contracts-v6): administrators cannot be exempted; 409 and nothing changes. The lab has no emergency
+    # administrator account to try.
     c = ctx.cred("admin-password")
     admin_id = ctx.h["ids"]["aerie"]["users"]["lab-admin"]
-    s = ctx.session("admin-password")
     try:
-        s.call("PUT", f"/admin/users/{admin_id}/codes/exempt", {"exempt": True})
+        ctx.session("admin-password").call("PUT", f"/admin/users/{admin_id}/codes/exempt", {"exempt": True}, ok=(409,))
     except SeedError as e:
-        raise Fail(f"exempting the admin failed: {e}")
-    try:
-        expect_user(ctx, basic(c["user"], c["password"]), c["user"], "password Basic for an exempted administrator")
-    finally:
-        s.call("PUT", f"/admin/users/{admin_id}/codes/exempt", {"exempt": False})
+        raise Fail(f"exempting the administrator did not answer 409: {e}")
+    rest_error(ctx.req("GET", "/rest/api/user/current", auth=basic(c["user"], c["password"])), 401)
 
 
 @case("auth.basic.token_in_password.ok", 1)
@@ -702,7 +720,7 @@ def _(ctx):
 @case("auth.audit.no_secrets", 10)
 def _(ctx):
     # The audit log, read through aerie's API after every other case but the last two; aerie's container log is
-    # scanned by run-on-host.sh after the suites (run.json, audit_scan_hits).
+    # scanned by harness/run-lab.sh after the suites (run.json, audit_scan_hits).
     s = ctx.session("admin-password")
     entries = []
     try:

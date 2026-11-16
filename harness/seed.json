@@ -3,7 +3,8 @@
     {"name": "lab-admin", "display": "Lab Admin", "admin": true},
     {"name": "lab-user", "display": "Lab User", "groups": ["lab-readers"]},
     {"name": "lab-noaccess", "display": "Lab No Access"},
-    {"name": "lab-lockout", "display": "Lab Lockout", "note": "only for the auth suite's lockout case, which locks it"}
+    {"name": "lab-lockout", "display": "Lab Lockout", "note": "only for the auth suite's lockout case, which locks it"},
+    {"name": "lab-codes", "display": "Lab Codes", "note": "only for auth.basic.codes_exempt.ok, which turns its sign-in codes on and exempts it"}
   ],
   "groups": [
     {"name": "lab-readers"}
