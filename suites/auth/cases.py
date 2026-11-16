@@ -418,11 +418,21 @@ def _(ctx):
 @case("auth.client.redirect.rejects", 4, ["auth.client.register"])
 def _(ctx):
     s = ctx.session("admin-password")
-    for uri in ("http://example.com/cb", "https://example.com/cb#frag", "https://*.example.com/cb"):
-        try:
-            s.call("POST", "/admin/oauth/clients", {"name": "x", "type": "public", "redirectUris": [uri], "scopes": ["READ"]}, ok=(400,))
-        except SeedError as e:
-            raise Fail(f"redirect URI {uri!r}: expected 400: {e}")
+    # The seed allows plain http (the lab has no https); identity.md refuses http redirect URIs only with the
+    # test-install setting off, so the check runs with it off.
+    try:
+        before = s.call("GET", "/admin/auth/compat")
+        s.call("PUT", "/admin/auth/compat", {**before, "allowHttpRedirects": False})
+    except SeedError as e:
+        raise Fail(f"turning allowHttpRedirects off failed: {e}")
+    try:
+        for uri in ("http://example.com/cb", "https://example.com/cb#frag", "https://*.example.com/cb"):
+            try:
+                s.call("POST", "/admin/oauth/clients", {"name": "x", "type": "public", "redirectUris": [uri], "scopes": ["READ"]}, ok=(400,))
+            except SeedError as e:
+                raise Fail(f"redirect URI {uri!r}: expected 400: {e}")
+    finally:
+        s.call("PUT", "/admin/auth/compat", before)
 
 
 @case("auth.client.secret_not_readable", 4, ["auth.client.register"])
