@@ -49,8 +49,12 @@ ROLES = [("anonymous", None, None), ("reader", "lab-user", "Reader"), ("contribu
          ("supervisor", "lab-supervisor", "Supervisor"), ("owner", "lab-owner", "Owner"), ("admin", "lab-admin", None)]
 # Never scanned: they would end the scan's own session or switch password sign-in off for every account.
 # They are also taken out of the definitions ZAP imports, because the OpenAPI import sends every operation
-# regardless of the context's exclusions (a run on 2026-11-16 lost each role's session that way).
+# regardless of the context's exclusions.
 EXCLUDE = [r".*/api/v1/auth/signout.*", r".*/api/v1/admin/auth/local/disable.*"]
+# Operations taken out of the definitions only (the path's other methods are scanned): turning sign-in codes
+# off ends every session of the account and gives the caller a new cookie, even when codes were not on, so the
+# rest of a role's scan would run signed out (found 2026-11-16; administrators cannot turn codes off).
+EXCLUDE_OPS = [("delete", "/api/v1/me/codes")]
 RISKS = ["High", "Medium", "Low", "Informational"]
 CONFIDENCES = ["Confirmed", "High", "Medium", "Low", "False Positive"]
 
@@ -227,6 +231,8 @@ def prep(args):
     specs = contract_definitions(work)
     for name, spec in specs.items():
         spec["paths"] = {k: v for k, v in spec["paths"].items() if not any(re.fullmatch(x, k) for x in EXCLUDE)}
+        for method, path in EXCLUDE_OPS:
+            spec["paths"].get(path, {}).pop(method, None)
         point_at(spec, ids)
         (work / f"{name}.json").write_text(json.dumps(spec), encoding="utf-8")
     findings, calls = access_check(base, sessions, specs, ids)
@@ -240,7 +246,7 @@ def prep(args):
     (work / "secrets.json").write_text(json.dumps(sorted({s for s in secrets if s})), encoding="utf-8")
     (out / "prep.json").write_text(json.dumps({
         "contract": CONTRACT, "operations": len(ops), "token_closed_operations": token_closed,
-        "excluded": EXCLUDE, "scan_space": SCAN_SPACE, "access_check_calls": calls, "access_findings": findings,
+        "excluded": EXCLUDE + [f"{m.upper()} {p}" for m, p in EXCLUDE_OPS], "scan_space": SCAN_SPACE, "access_check_calls": calls, "access_findings": findings,
         "roles": {role: (user or "none") for role, user, _ in ROLES}}, indent=2), encoding="utf-8")
     print(f"prep: {len(ops)} operations, {calls} access-check calls, {len(findings)} access finding(s), plans for {len(ROLES)} roles")
 

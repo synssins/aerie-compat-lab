@@ -46,6 +46,7 @@ These are excluded from the scan context and removed from the definitions ZAP im
 
 - `/api/v1/auth/signout`
 - `/api/v1/admin/auth/local/disable`
+- `DELETE /api/v1/me/codes` (the path's `GET` is scanned). Turning sign-in codes off ends every session of the account and gives the caller a new cookie, even when codes were not on. The scan keeps sending the old cookie, so the rest of its scan would run signed out. A run on 2026-11-16 lost the Reader, Contributor, Supervisor and Owner sessions this way. The administrator kept its session, because administrators cannot turn codes off.
 
 The web app is a single-page app. The traditional spider and the passive scan cover its HTML and scripts, and the API it calls is covered through the definitions. The browser-driven AJAX spider is not run.
 
