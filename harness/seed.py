@@ -202,6 +202,15 @@ def seed(base, plan, setup_code):
     steps.append(f"tokens: {len(plan['tokens'])} personal token(s) created by their owner (POST /api/v1/tokens)")
 
     oauth, oauth_gap = {}, None
+    if plan.get("oauth_clients"):
+        # The lab serves aerie on plain http; a production install refuses OAuth 2.0 there unless the
+        # test-install setting allows it (behaviour/identity-plan.md slice 10, CompatAuthSettingsDto).
+        try:
+            compat = admin.call("GET", "/admin/auth/compat")
+            admin.call("PUT", "/admin/auth/compat", {**compat, "allowHttpRedirects": True})
+            steps.append("oauth over plain http allowed (PUT /api/v1/admin/auth/compat allowHttpRedirects=true)")
+        except SeedError as e:
+            steps.append(f"oauth over plain http not allowed: {e}"[:300])
     for c in plan.get("oauth_clients", []):
         try:
             made = admin.call("POST", "/admin/oauth/clients", {"name": c["name"], "type": c["type"], "redirectUris": [c["redirect_uri"]],
@@ -250,7 +259,8 @@ def main():
         "credentials": {"admin": {"user": credentials["lab-admin"]["user"], "password": credentials["lab-admin"]["basic_token"]}
                                  if credentials.get("lab-admin", {}).get("basic_token") else credentials.get("lab-admin", missing),
                         "admin-password": credentials.get("lab-admin", missing), "user": credentials.get("lab-user", missing),
-                        "noaccess": credentials.get("lab-noaccess", missing), "lockout": credentials.get("lab-lockout", missing)},
+                        "noaccess": credentials.get("lab-noaccess", missing), "lockout": credentials.get("lab-lockout", missing),
+                        "codes": credentials.get("lab-codes", missing)},
         "tokens": tokens,
         "oauth_clients": oauth,
         # aerie's own ids, nested so they never shadow the suites' vendor-surface fixtures.

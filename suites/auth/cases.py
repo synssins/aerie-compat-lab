@@ -7,7 +7,8 @@ multi-step flow run with raw HTTP; run it through suites/run.py like any suite:
   python -I suites/run.py suites/auth --harness reports/harness.json --out reports/auth
 
 Run it after the other suites: it creates pages in PRIV, changes a sign-in code exemption and back, and
-its last case locks the lab-lockout account (and may slow the caller's address) on purpose.
+its last cases lock the lab-lockout account and rate-limit the caller's address on purpose, and
+auth.oauth.refresh.after_access_expiry waits five minutes for an access token to expire.
 """
 import base64
 import hashlib
@@ -279,17 +280,35 @@ def _(ctx):
 
 @case("auth.basic.codes_exempt.ok", 1, ["auth.basic.codes_on.refused"])
 def _(ctx):
+    # contracts-v6 identity-plan.md slice 1: a user who is not an administrator turns codes on, is refused on
+    # password Basic, is exempted by an administrator (204) and then gets 200.
+    c = ctx.cred("codes")
+    user_id = ctx.h["ids"]["aerie"]["users"][c["user"]]
+    try:
+        me = Aerie(ctx.base).signin(c["user"], c["password"])
+        key = me.call("POST", "/auth/codes/key", {})["key"]
+        me.call("POST", "/auth/codes", {"code": totp(key)})
+    except SeedError as e:
+        raise Fail(f"{c['user']} turning sign-in codes on failed: {e}")
+    rest_error(ctx.req("GET", "/rest/api/user/current", auth=basic(c["user"], c["password"])), 401)
+    try:
+        ctx.session("admin-password").call("PUT", f"/admin/users/{user_id}/codes/exempt", {"exempt": True}, ok=(204,))
+    except SeedError as e:
+        raise Fail(f"exempting {c['user']} did not answer 204: {e}")
+    expect_user(ctx, basic(c["user"], c["password"]), c["user"], "password Basic for an exempted user with codes on")
+
+
+@case("auth.basic.codes_exempt.admin_refused", 1, ["auth.basic.codes_on.refused"])
+def _(ctx):
+    # Q-0020 (contracts-v6): administrators cannot be exempted; 409 and nothing changes. The lab has no emergency
+    # administrator account to try.
     c = ctx.cred("admin-password")
     admin_id = ctx.h["ids"]["aerie"]["users"]["lab-admin"]
-    s = ctx.session("admin-password")
     try:
-        s.call("PUT", f"/admin/users/{admin_id}/codes/exempt", {"exempt": True})
+        ctx.session("admin-password").call("PUT", f"/admin/users/{admin_id}/codes/exempt", {"exempt": True}, ok=(409,))
     except SeedError as e:
-        raise Fail(f"exempting the admin failed: {e}")
-    try:
-        expect_user(ctx, basic(c["user"], c["password"]), c["user"], "password Basic for an exempted administrator")
-    finally:
-        s.call("PUT", f"/admin/users/{admin_id}/codes/exempt", {"exempt": False})
+        raise Fail(f"exempting the administrator did not answer 409: {e}")
+    rest_error(ctx.req("GET", "/rest/api/user/current", auth=basic(c["user"], c["password"])), 401)
 
 
 @case("auth.basic.token_in_password.ok", 1)
@@ -417,11 +436,21 @@ def _(ctx):
 @case("auth.client.redirect.rejects", 4, ["auth.client.register"])
 def _(ctx):
     s = ctx.session("admin-password")
-    for uri in ("http://example.com/cb", "https://example.com/cb#frag", "https://*.example.com/cb"):
-        try:
-            s.call("POST", "/admin/oauth/clients", {"name": "x", "type": "public", "redirectUris": [uri], "scopes": ["READ"]}, ok=(400,))
-        except SeedError as e:
-            raise Fail(f"redirect URI {uri!r}: expected 400: {e}")
+    # The seed allows plain http (the lab has no https); identity.md refuses http redirect URIs only with the
+    # test-install setting off, so the check runs with it off.
+    try:
+        before = s.call("GET", "/admin/auth/compat")
+        s.call("PUT", "/admin/auth/compat", {**before, "allowHttpRedirects": False})
+    except SeedError as e:
+        raise Fail(f"turning allowHttpRedirects off failed: {e}")
+    try:
+        for uri in ("http://example.com/cb", "https://example.com/cb#frag", "https://*.example.com/cb"):
+            try:
+                s.call("POST", "/admin/oauth/clients", {"name": "x", "type": "public", "redirectUris": [uri], "scopes": ["READ"]}, ok=(400,))
+            except SeedError as e:
+                raise Fail(f"redirect URI {uri!r}: expected 400: {e}")
+    finally:
+        s.call("PUT", "/admin/auth/compat", before)
 
 
 @case("auth.client.secret_not_readable", 4, ["auth.client.register"])
@@ -599,9 +628,27 @@ def _(ctx):
     expect_user(ctx, bearer(n["access_token"]), "lab-user", "refreshed access token")
 
 
-@case("auth.oauth.refresh.after_access_expiry", 8)
+@case("auth.oauth.refresh.after_access_expiry", 8, ["auth.oauth.refresh.ok"])
 def _(ctx):
-    raise NotRunnable("the contract has no call to shorten the access token lifetime (300 s minimum), so the lab cannot expire one within a run")
+    # identity.md "Lifetimes": the access token lifetime is a site setting, 300 s at least; this case waits it out.
+    s = ctx.session("admin-password")
+    try:
+        before = s.call("GET", "/admin/auth/compat")
+        s.call("PUT", "/admin/auth/compat", {**before, "accessTokenSeconds": 300})
+    except SeedError as e:
+        raise Fail(f"setting a 300 s access token lifetime failed: {e}")
+    try:
+        client, j = tokens(ctx)
+    finally:
+        s.call("PUT", "/admin/auth/compat", before)
+    expect(j.get("expires_in") == 300, f"the token was issued for {j.get('expires_in')} s, expected 300")
+    time.sleep(305)
+    old, _ = ctx.current_user(bearer(j["access_token"]))
+    expect(old.status == 401, f"the access token still works after it expired ({old.status})")
+    r = refresh(ctx, client, j["refresh_token"])
+    n = r.json() or {}
+    expect(r.status == 200 and n.get("access_token"), f"refresh after the access token expired gave {r.status} {r.body[:150]!r}")
+    expect_user(ctx, bearer(n["access_token"]), "lab-user", "access token refreshed after expiry")
 
 
 @case("auth.oauth.refresh.reuse", 8, ["auth.oauth.refresh.ok"])
@@ -672,15 +719,34 @@ def _(ctx):
 
 @case("auth.audit.no_secrets", 10)
 def _(ctx):
-    raise NotRunnable("the log scan needs aerie's container log, which the suites cannot read; run-lab.sh scans it after the suites (run.json, audit_scan)")
+    # The audit log, read through aerie's API after every other case but the last two; aerie's container log is
+    # scanned by harness/run-lab.sh after the suites (run.json, audit_scan_hits).
+    s = ctx.session("admin-password")
+    entries = []
+    try:
+        for page in range(40):
+            got = s.call("GET", f"/admin/audit?take=500&offset={page * 500}") or []
+            entries += got
+            if len(got) < 500:
+                break
+    except SeedError as e:
+        raise Fail(f"reading the audit log failed: {e}")
+    expect(entries, "the audit log is empty")
+    text = json.dumps(entries)
+    known = [c.get(k) for c in ctx.h["credentials"].values() for k in ("password", "totp_key")]
+    known += [t.get("token") for t in ctx.h.get("tokens", {}).values()]
+    known += [c.get("clientSecret") for c in ctx.h.get("oauth_clients", {}).values()]
+    leaked = [k[:4] + "..." for k in known if k and len(k) >= 8 and k in text]
+    expect(not leaked, f"the audit log holds {len(leaked)} seeded secret(s): {leaked}")
+    whole = sorted({m[:12] + "..." for m in re.findall(r"kb[tor]_[A-Za-z0-9_-]{20,}", text)})
+    expect(not whole, f"the audit log holds whole tokens: {whole}")
 
 
-@case("auth.ratelimit.token", 10)
-def _(ctx):
-    raise NotRunnable("not run: hammering the token endpoint would rate-limit the lab's own address for the remaining cases")
+# Last three, in this order: the audit scan after everything else, then the lockout (locks lab-lockout and may
+# slow the caller's address), then the token rate limit (limits the caller's address at the token endpoint).
+LAST = ("auth.audit.no_secrets", "auth.basic.lockout", "auth.ratelimit.token")
 
 
-# Last: locks lab-lockout and may slow the caller's address, so nothing runs after it.
 @case("auth.basic.lockout", 1, ["auth.basic.password.wrong"])
 def _(ctx):
     c = ctx.cred("lockout")
@@ -693,16 +759,34 @@ def _(ctx):
     raise Fail("30 wrong passwords never gave 429")
 
 
+@case("auth.ratelimit.token", 10, ["auth.oauth.pkce.full_flow"])
+def _(ctx):
+    client = ctx.client("lab-public")
+    for attempt in range(1, 301):
+        r = token_call(ctx, client, {"grant_type": "authorization_code", "code": secrets.token_urlsafe(32),
+                                     "redirect_uri": client["redirect_uri"], "code_verifier": secrets.token_urlsafe(48)})
+        if r.status == 429:
+            expect(r.header("Retry-After"), "429 without Retry-After")
+            j = r.json()
+            expect(isinstance(j, dict) and j.get("error") == "temporarily_unavailable",
+                   f"the 429 body is not {{error: temporarily_unavailable}}: {r.body[:200]!r}")
+            ctx.log = ctx.log[-3:]
+            return
+        expect(r.status == 400, f"bad code {attempt} gave {r.status}, expected 400 then 429")
+    ctx.log = ctx.log[-3:]
+    raise Fail("300 bad token requests never gave 429")
+
+
 def run(base, handoff, fixtures, failures_dir):
-    # Each case after the cases it needs; the lockout case last of all.
-    order, placed, pending = [], set(), [c for c in CASES if c[0] != "auth.basic.lockout"]
+    # Each case after the cases it needs; the LAST cases at the end, in their order.
+    order, placed, pending = [], set(), [c for c in CASES if c[0] not in LAST]
     while pending:
         ready = [c for c in pending if all(n in placed for n in c[2])] or pending[:1]
         for c in ready:
             order.append(c)
             placed.add(c[0])
         pending = [c for c in pending if c[0] not in placed]
-    order += [c for c in CASES if c[0] == "auth.basic.lockout"]
+    order += sorted((c for c in CASES if c[0] in LAST), key=lambda c: LAST.index(c[0]))
     ctx = Ctx(base, handoff, fixtures)
     rows, result = [], {}
     for cid, slice_no, needs, fn in order:
