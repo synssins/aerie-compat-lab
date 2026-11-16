@@ -2,6 +2,7 @@
 
 Usage (inside the runner container, from harness/run-lab.sh):
   python -I security/zap/scan.py prep   --harness reports/harness.json --out reports/security-zap
+  python -I security/zap/scan.py after  --role reader --out reports/security-zap   (after each role's scan)
   python -I security/zap/scan.py report --harness reports/harness.json --out reports/security-zap
 
 prep (before the scans, while reports/harness.json still holds the seeded secrets):
@@ -14,6 +15,8 @@ prep (before the scans, while reports/harness.json still holds the seeded secret
   - runs the lab access check: every GET of both definitions as every role, flagging answers a role
     must not get;
   - writes one ZAP Automation Framework plan per role into <out>/work (with the session; deleted by report).
+after (right after each role's scan): whether the role's session still works, and for each High or Medium
+  GET the text around its evidence in a fresh answer.
 report (after the scans): counts by risk and confidence per role, every High and Medium alert with its
   triage from security/zap/baseline.json, the gate (FAIL when a High or Medium is not in the baseline),
   secrets blanked with harness/redact.py, and the work folder removed.
@@ -239,6 +242,33 @@ def prep(args):
     print(f"prep: {len(ops)} operations, {calls} access-check calls, {len(findings)} access finding(s), plans for {len(ROLES)} roles")
 
 
+def get(url, cookie):
+    req = urllib.request.Request(url, headers={"Accept": "application/json", **({"Cookie": cookie} if cookie else {})})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            return r.status, r.read(200_000).decode("utf-8", "replace")
+    except urllib.error.HTTPError as e:
+        return e.code, ""
+
+
+def after(args):
+    """Right after one role's scan: is its session still signed in, and what do its High and Medium GETs answer
+    now (the text around the evidence, for triage)."""
+    work = Path(args.out) / "work"
+    rules = json.loads((work / f"{args.role}.yaml").read_text(encoding="utf-8"))["jobs"][1]["rules"]
+    cookie = next((r["replacementString"] for r in rules if r["matchString"] == "Cookie"), None)
+    result = {"session": get(TARGET + "/api/v1/me", cookie)[0] if cookie else None, "excerpts": {}}
+    f = work / "out" / f"{args.role}.json"
+    for site in json.loads(f.read_text(encoding="utf-8")).get("site", []) if f.is_file() else []:
+        for al in site.get("alerts", []):
+            for i in al.get("instances", []) if al["riskcode"] in ("2", "3") else []:
+                if i.get("method") == "GET" and i.get("evidence") and i["uri"] not in result["excerpts"]:
+                    status, body = get(i["uri"], cookie)
+                    at = body.find(i["evidence"])
+                    result["excerpts"][i["uri"]] = f"HTTP {status}: " + (body[max(0, at - 200):at + 200] if at >= 0 else "(evidence no longer in the answer)")
+    (work / f"after-{args.role}.json").write_text(json.dumps(result), encoding="utf-8")
+
+
 def matches(entry, inst):
     return (str(entry["pluginid"]) == str(inst["pluginid"])
             and re.fullmatch(entry.get("uri", ".*"), inst["uri"]) is not None
@@ -270,7 +300,7 @@ def report(args):
                     if risk in ("High", "Medium"):
                         instances.append({"role": role, "pluginid": al["pluginid"], "alert": al["alert"], "risk": risk,
                                           "confidence": conf, "method": i.get("method", ""), "uri": i.get("uri", ""),
-                                          "param": i.get("param", ""), "evidence": (i.get("evidence") or "")[:200],
+                                          "param": i.get("param", ""), "attack": (i.get("attack") or "")[:200], "evidence": (i.get("evidence") or "")[:200],
                                           "otherinfo": (i.get("otherinfo") or "")[:300]})
     for f in prepped["access_findings"]:
         counts[f["role"]]["High"]["High"] += 1
@@ -280,14 +310,13 @@ def report(args):
 
     alive = {}
     for role, _, _ in ROLES:
-        cookie = next((p["replacementString"] for p in json.loads((work / f"{role}.yaml").read_text())["jobs"][1]["rules"]
-                       if p["matchString"] == "Cookie"), None) if (work / f"{role}.yaml").is_file() else None
-        if cookie:
-            try:
-                with urllib.request.urlopen(urllib.request.Request(TARGET + "/api/v1/me", headers={"Cookie": cookie}), timeout=30) as r:
-                    alive[role] = r.status
-            except urllib.error.HTTPError as e:
-                alive[role] = e.code
+        f = work / f"after-{role}.json"
+        after = json.loads(f.read_text(encoding="utf-8")) if f.is_file() else {}
+        if after.get("session"):
+            alive[role] = after["session"]
+        for inst in instances:
+            if inst["role"] == role and inst["uri"] in after.get("excerpts", {}):
+                inst["response_excerpt"] = after["excerpts"][inst["uri"]]
     untriaged = [i for i in instances if i["triage"] == "untriaged"]
     gate = "FAIL" if untriaged or missing else "PASS"
     summary = {"gate": gate, "untriaged": len(untriaged), "roles_without_report": missing, "seconds": times,
@@ -331,7 +360,8 @@ def matrix(s):
         roles = sorted({i["role"] for i in items})
         rows += [f"### {risk}: {alert} (`{pid}`), {len(items)} instance(s)", "", f"Roles: {', '.join(roles)}. Triage: {triage}", ""]
         for i in items[:5]:
-            rows.append(f"- {i['role']} {i['method']} `{i['uri']}` param `{i['param']}` evidence `{i['evidence'][:80]}`")
+            rows.append(f"- {i['role']} {i['method']} `{i['uri']}` param `{i['param']}` evidence `{i['evidence'][:80]}`"
+                        + (f" attack `{i['attack'][:80]}`" if i.get("attack") else ""))
         if len(items) > 5:
             rows.append(f"- ... {len(items) - 5} more")
         rows.append("")
@@ -340,8 +370,9 @@ def matrix(s):
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
-    ap.add_argument("step", choices=["prep", "report"])
+    ap.add_argument("step", choices=["prep", "after", "report"])
+    ap.add_argument("--role")
     ap.add_argument("--harness", default="reports/harness.json")
     ap.add_argument("--out", default="reports/security-zap")
     a = ap.parse_args()
-    (prep if a.step == "prep" else report)(a)
+    {"prep": prep, "after": after, "report": report}[a.step](a)

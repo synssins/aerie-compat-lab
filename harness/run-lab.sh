@@ -101,6 +101,7 @@ if [ "$ZAP" = 1 ] && [ "$seed_rc" = 0 ]; then
       t0=$(date +%s)
       dc run --rm -T zap zap.sh -cmd -silent -dir /tmp/zap -autorun "/zap/wrk/$role.yaml" </dev/null >"reports/security-zap/$role.log" 2>&1 || echo "zap $role exit $?"
       echo "$role $(( $(date +%s) - t0 ))" >>reports/security-zap/work/times.txt
+      runner python -I security/zap/scan.py after --role "$role" --out reports/security-zap || true
       echo "zap $role: $(( ($(date +%s) - t0) / 60 )) min"
     done <reports/security-zap/work/roles.txt
     runner python -I security/zap/scan.py report --harness reports/harness.json --out reports/security-zap || true
