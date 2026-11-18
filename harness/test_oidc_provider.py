@@ -103,5 +103,10 @@ assert "error" in flow("error_redirect")[0]
 call("/lab/next", json.dumps({"user": "lab-oidc-new", "mode": "discovery_redirect"}).encode())
 assert call("/.well-known/openid-configuration")[0] == 302
 assert call("/lab/next", json.dumps({"user": "nobody"}).encode())[0] == 400
+call("/lab/next", json.dumps({"user": "lab-oidc-new", "mode": "ok"}).encode())
+assert json.loads(call("/d/discovery_wrong_issuer/.well-known/openid-configuration")[2])["issuer"] != op.ISSUER
+assert json.loads(call("/d/token_http_endpoint/.well-known/openid-configuration")[2])["token_endpoint"].startswith("http://")
+assert call("/d/discovery_redirect/.well-known/openid-configuration")[0] == 302
+assert json.loads(call("/.well-known/openid-configuration")[2])["issuer"] == op.ISSUER
 srv.shutdown()
 print("ok")

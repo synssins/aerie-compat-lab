@@ -43,6 +43,7 @@ USERS = {
 MODES = {"ok", "bad_signature", "alg_none", "wrong_issuer", "wrong_audience", "wrong_nonce", "no_nonce", "expired",
          "future_iat", "no_sub", "userinfo_sub_mismatch", "userinfo_signed", "wrong_azp", "wrong_kid", "error_redirect",
          "discovery_redirect", "discovery_wrong_issuer", "token_http_endpoint"}
+DISCOVERY_MODES = {"discovery_redirect", "discovery_wrong_issuer", "token_http_endpoint"}
 
 
 def b64(data):
@@ -152,7 +153,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
         url = urllib.parse.urlsplit(self.path)
         q = {k: v[0] for k, v in urllib.parse.parse_qs(url.query).items()}
         mode = P.next["mode"]
-        if url.path == "/.well-known/openid-configuration":
+        # aerie caches a discovery document, so each discovery mode has its own address, set as that provider's
+        # Discovery address: /d/<mode>/.well-known/openid-configuration.
+        parts = url.path.split("/")
+        if url.path.endswith("/.well-known/openid-configuration") and len(parts) == 5 and parts[1] == "d" and parts[2] in MODES:
+            mode = parts[2]
+        if url.path == "/.well-known/openid-configuration" or url.path.endswith("/.well-known/openid-configuration") and mode in DISCOVERY_MODES:
             if mode == "discovery_redirect":
                 return self.send(302, headers={"Location": ISSUER + "/elsewhere/.well-known/openid-configuration"})
             token = ISSUER.replace("https://", "http://") + "/token" if mode == "token_http_endpoint" else ISSUER + "/token"

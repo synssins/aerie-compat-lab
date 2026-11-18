@@ -35,8 +35,12 @@ ISSUER = "https://oidc:8443"
 CASES = [("ok", "lab-oidc-new", True), ("ok", "lab-oidc-link", True), ("ok", "lab-oidc-unverified", False)] + [
     (m, "lab-oidc-new", False) for m in ("bad_signature", "alg_none", "wrong_issuer", "wrong_audience", "wrong_nonce",
                                          "no_nonce", "expired", "future_iat", "no_sub", "userinfo_sub_mismatch",
-                                         "userinfo_signed", "wrong_azp", "wrong_kid", "error_redirect",
-                                         "discovery_redirect", "discovery_wrong_issuer", "token_http_endpoint")]
+                                         "userinfo_signed", "wrong_azp", "error_redirect")] + [
+    # The token names a key id the provider does not publish, but is signed by its one published key: a valid
+    # signature, so letting the person in is correct (key selection may fall back to the published keys).
+    ("wrong_kid", "lab-oidc-new", True)]
+# Each on its own provider in aerie (aerie caches discovery), with Discovery address /d/<mode>/...; must be refused.
+DISCOVERY_CASES = ["discovery_redirect", "discovery_wrong_issuer", "token_http_endpoint"]
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -171,6 +175,15 @@ def main():
     values = {k + "issuer": ISSUER, k + "clientId": "lab-aerie", k + "clientSecret": secret,
               k + "privateNetwork": "true", k + "newAccounts": "true", k + "userInfo": "true"}
     report["saved"] = admin.call("PUT", f"/admin/plugins/{PLUGIN_ID}/settings", {"values": values})
+    discovery_providers = {}
+    for mode in DISCOVERY_CASES:
+        dp = admin.call("POST", f"/admin/plugins/{PLUGIN_ID}/signin-providers", {"title": f"Lab {mode}"})
+        k = f"signIn.{dp['id']}."
+        admin.call("PUT", f"/admin/plugins/{PLUGIN_ID}/settings", {"values": {
+            k + "issuer": ISSUER, k + "discovery": f"{ISSUER}/d/{mode}/.well-known/openid-configuration", k + "clientId": "lab-aerie",
+            k + "clientSecret": secret, k + "privateNetwork": "true", k + "newAccounts": "true"}})
+        discovery_providers[mode] = dp["id"]
+    report["discovery_providers"] = discovery_providers
     # The account the provider's lab-oidc-link user is matched to by its verified address.
     admin.call("POST", "/admin/users/invite", {"userName": "lab-oidc-link", "displayName": "Lab OIDC Link", "isAdmin": False,
                                                 "email": "lab-oidc-link@lab.test"})
@@ -184,6 +197,12 @@ def main():
         # A refusal counts only when aerie refused the sign-in itself (its sign-in screen message), not a rate limit.
         ok = not r["throttled"] and (bool(r["who"]) if admitted else (not r["who"] and bool(r["message"])))
         rows.append({"mode": mode, "user": user, "expected": "signed in" if admitted else "refused",
+                     "got": "rate limited" if r["throttled"] else (f"signed in as {r['who']}" if r["who"] else f"refused: {r['message']}"),
+                     "result": "PASS" if ok else ("ERROR" if r["throttled"] else "FAIL"), "steps": r["steps"]})
+    for mode, dpid in discovery_providers.items():
+        r = sign_in_once(base, ctx, dpid, "lab-oidc-new", "ok")
+        ok = not r["throttled"] and not r["who"] and bool(r["message"])
+        rows.append({"mode": mode, "user": "lab-oidc-new", "expected": "refused",
                      "got": "rate limited" if r["throttled"] else (f"signed in as {r['who']}" if r["who"] else f"refused: {r['message']}"),
                      "result": "PASS" if ok else ("ERROR" if r["throttled"] else "FAIL"), "steps": r["steps"]})
     for bad in ("https://evil.example/x", "//evil.example/x", "/\\evil.example/x"):
