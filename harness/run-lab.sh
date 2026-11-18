@@ -8,6 +8,8 @@
 # Usage: bash harness/run-lab.sh [image-tag]          (default tag: latest)
 # Settings (environment): AERIE_PORT (default 18090; never 8080 or 8081), SUITES (default "datacenter/t1 auth"),
 #                         ZAP=1 to add the security/zap stage after the suites (security/zap/README.md; default 0)
+#                         OIDC=1 to add the lab OIDC provider and sign in through aerie.signin.oidc (harness/README.md;
+#                         default 1 when the plugin package is in .plugins/, which is not committed)
 # Exit code: 0 when the harness worked (suite failures are results, not harness errors), 1 otherwise.
 set -euo pipefail
 
@@ -16,6 +18,7 @@ PORT=${AERIE_PORT:-18090}
 SUITES=${SUITES:-datacenter/t1 auth}  # auth last: it locks an account on purpose
 ZAP=${ZAP:-0}
 PROJECT=aerie-lab
+OIDC_PLUGIN=${OIDC_PLUGIN:-.plugins/aerie.signin.oidc-1.0.0.kbplugin}
 
 [[ "$TAG" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "invalid aerie tag: '$TAG'" >&2; exit 1; }
 [[ "$PORT" =~ ^[0-9]+$ ]] && [ "$PORT" != 8080 ] && [ "$PORT" != 8081 ] || { echo "refusing host port '$PORT'" >&2; exit 1; }
@@ -25,7 +28,14 @@ cd "$(dirname "$0")/.."
 echo "lab commit $(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
 
 export AERIE_TAG=$TAG AERIE_PORT=$PORT LAB_UID=$(id -u) LAB_GID=$(id -g)
-dc() { docker compose -p "$PROJECT" -f harness/docker-compose.yml --profile runner --profile zap "$@"; }
+OIDC=${OIDC:-$([ -f "$OIDC_PLUGIN" ] && echo 1 || echo 0)}
+compose_files=(-f harness/docker-compose.yml)
+if [ "$OIDC" = 1 ]; then
+  compose_files+=(-f harness/oidc.compose.yml)
+  OIDC_CLIENT_SECRET=$(head -c 24 /dev/urandom | od -An -tx1 | tr -d ' 
+'); export OIDC_CLIENT_SECRET  # this run only
+fi
+dc() { docker compose -p "$PROJECT" "${compose_files[@]}" --profile runner --profile zap "$@"; }
 # </dev/null: docker must never read this script's stdin (run-on-host.sh may arrive on it).
 runner() { dc run --rm -T runner "$@" </dev/null; }
 teardown() {
@@ -61,6 +71,12 @@ echo "generate.sh exit $gen_rc ($(grep -cE ' (java|python|typescript-axios) ok$'
 say "self-checks"
 runner python -I suites/test_run.py
 runner python -I harness/test_seed.py
+runner python -I harness/test_oidc_provider.py
+if [ "$OIDC" = 1 ]; then
+  say "lab OIDC provider"
+  runner python -I harness/oidc_provider.py certs reports/oidc
+  dc up -d oidc </dev/null
+fi
 
 say "start aerie on host port $PORT"
 dc up -d aerie </dev/null
@@ -76,6 +92,15 @@ say "seed"
 seed_rc=0
 runner python -I harness/seed.py --base-url http://aerie:8080 --out reports/harness.json || seed_rc=$?
 unset AERIE_SETUP_CODE
+oidc_rc=skipped
+if [ "$OIDC" = 1 ] && [ "$seed_rc" = 0 ]; then
+  say "sign-in through the lab OIDC provider"
+  oidc_rc=0
+  dc run --rm -T -e OIDC_CLIENT_SECRET runner python -I harness/oidc_setup.py --harness reports/harness.json --plugin "$OIDC_PLUGIN" \
+    --certs reports/oidc --out reports/oidc </dev/null >reports/oidc.log 2>&1 || oidc_rc=$?
+  grep -E '^(Totals|\| )' reports/oidc.log || tail -n 8 reports/oidc.log
+  rm -f reports/oidc/server.key
+fi
 
 suite_rc=0
 for suite in $SUITES; do
@@ -126,7 +151,7 @@ runner python -I harness/redact.py reports/harness.json
 cat >reports/run.json <<EOF
 {"tag": "$TAG", "digest": "$digest", "lab_commit": "$(git rev-parse HEAD 2>/dev/null || echo unknown)", "host_port": $PORT,
  "generate_exit": $gen_rc, "seed_exit": $seed_rc, "suites_exit": $suite_rc, "audit_scan_hits": $secrets_in_log,
- "zap_gate": "$zap_gate", "zap_seconds": $zap_seconds, "finished": "$(date -u +%FT%TZ)"}
+ "oidc_exit": "$oidc_rc", "zap_gate": "$zap_gate", "zap_seconds": $zap_seconds, "finished": "$(date -u +%FT%TZ)"}
 EOF
 cat reports/run.json
 [ "$seed_rc" = 0 ] && [ "$gen_rc" = 0 ]

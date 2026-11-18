@@ -1,0 +1,24 @@
+# The lab's test OpenID Connect provider (harness/oidc_provider.py), added to project aerie-lab when OIDC=1:
+#   docker compose -p aerie-lab -f harness/docker-compose.yml -f harness/oidc.compose.yml ...
+# It joins the default and scan networks and publishes no port: aerie, the runner (the browser) and ZAP reach it,
+# nothing outside the project does. Its throwaway certificate authority is in reports/oidc (made by
+# `oidc_provider.py certs`), and aerie trusts it through SSL_CERT_FILE, which .NET on Linux takes from OpenSSL,
+# so the image under test is not changed.
+services:
+  aerie:
+    environment:
+      SSL_CERT_FILE: /lab-ca/bundle.pem
+    volumes:
+      - ../reports/oidc:/lab-ca:ro
+
+  oidc:
+    image: aerie-lab-runner:local
+    user: "${LAB_UID:-1000}:${LAB_GID:-1000}"
+    environment:
+      HOME: /tmp
+      OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET:?set OIDC_CLIENT_SECRET}
+    working_dir: /lab
+    command: ["python", "-I", "harness/oidc_provider.py", "serve", "reports/oidc"]
+    networks: [default, scan]
+    volumes:
+      - ..:/lab:ro
