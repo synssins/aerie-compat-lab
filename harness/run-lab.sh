@@ -115,6 +115,12 @@ if [ "$ZAP" = 1 ] && [ "$seed_rc" = 0 ]; then
       runner python -I security/zap/scan.py after --role "$role" --out reports/security-zap || true
       echo "zap $role: $(( ($(date +%s) - t0) / 60 )) min"
     done <reports/security-zap/work/roles.txt
+    # The last role's scan restarts aerie too (plugin lock releases): record restarts after it as well.
+    cid=$(dc ps -aq aerie </dev/null)
+    restarts=$(docker inspect -f '{{.RestartCount}}' "$cid" 2>/dev/null || echo 0)
+    if [ "$restarts" != "${last_restarts:-0}" ]; then
+      echo "after the last role: restarts=$restarts" | tee -a reports/security-zap/work/aerie-down.txt
+    fi
     dc logs --no-color --tail 2000 aerie </dev/null >reports/security-zap/aerie.log 2>&1 || true
     runner python -I security/zap/scan.py report --harness reports/harness.json --out reports/security-zap || true
   fi

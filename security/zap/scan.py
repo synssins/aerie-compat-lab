@@ -222,7 +222,12 @@ def sign_in_methods(base, sessions):
             callback + "?state=lab-forged&code=lab", callback + "?code=lab"]
     urls += [f"{start}?{p}={urllib.parse.quote(v, safe='')}" for p in RETURN_PARAMS for v in OFFSITE]
     urls += [f"/api/v1/auth/methods/outcome?{p}={urllib.parse.quote(v, safe='')}" for p in RETURN_PARAMS for v in OFFSITE]
+    def who(cookie):
+        status, body = get(base + "/api/v1/me", cookie) if cookie else (None, "")
+        return json.loads(body).get("userName") if status == 200 and body.lstrip()[:1] == "{" else None
+
     for role in ("anonymous", "reader"):
+        own = who(sessions[role])
         for url in urls:
             status, headers, body = raw(base, "GET", url, sessions[role])
             loc = headers.get("Location") or ""
@@ -233,8 +238,11 @@ def sign_in_methods(base, sessions):
                 findings.append(finding(role, "GET", url, status, body, "server error on a plugin sign-in route", "Medium"))
             if host and host not in ("aerie:8080", "aerie"):
                 findings.append(finding(role, "GET", url, status, loc.encode(), f"redirect off the site to {loc}"))
-            if "callback" in url and "error=" not in url and cookies:
-                findings.append(finding(role, "GET", url, status, body, "callback without a valid state set a session cookie"))
+            # aerie renews the caller's own session cookie on most answers (since 2cf1f9c); only a session for
+            # someone else, or any session for an anonymous caller, is a sign-in without a valid state.
+            got = who(cookies[0].split(";", 1)[0]) if "callback" in url and "error=" not in url and cookies else None
+            if got and got != own:
+                findings.append(finding(role, "GET", url, status, body, f"callback without a valid state signed in as {got}"))
     return findings, {"plugin": plugin, "method": method, "answers": seen}
 
 
@@ -482,8 +490,15 @@ def report(args):
     untriaged = [i for i in instances if i["triage"] == "untriaged"]
     lost = [r for r, status in alive.items() if status != 200]  # its scan ran, at least partly, signed out
     down = (work / "aerie-down.txt").read_text(encoding="utf-8").splitlines() if (work / "aerie-down.txt").is_file() else []
-    gate = "FAIL" if untriaged or missing or lost or down else "PASS"
-    summary = {"gate": gate, "untriaged": len(untriaged), "roles_without_report": missing, "roles_signed_out": lost, "aerie_down": down, "seconds": times,
+    # A restart aerie asked for itself (its log names the reason, "Restarting: <action> <plugin>") is not a finding;
+    # any other stop is: a crash, an OOM kill, or more restarts than the log explains.
+    log = (out / "aerie.log").read_text(encoding="utf-8", errors="replace") if (out / "aerie.log").is_file() else ""
+    reasons = re.findall(r"Restarting: (.+)", log)
+    restarts = max([int(x) for line in down for x in re.findall(r"restarts=(\d+)", line)] or [0])
+    unexplained = [line for line in down if "oom=true" in line] + ([f"{restarts} restart(s), {len(reasons)} explained in aerie's log"]
+                                                                  if restarts > len(reasons) or (down and not restarts) else [])
+    gate = "FAIL" if untriaged or missing or lost or unexplained else "PASS"
+    summary = {"gate": gate, "untriaged": len(untriaged), "roles_without_report": missing, "roles_signed_out": lost, "aerie_down": down, "aerie_restart_reasons": reasons, "aerie_unexplained_stops": unexplained, "seconds": times,
                "session_after_scan": alive, **{k: prepped[k] for k in ("contract", "operations", "token_closed_operations", "excluded", "roles", "access_check_calls")},
                "probes": prepped.get("probes", {}),
                "counts": counts, "high_medium": instances}
@@ -506,7 +521,8 @@ def matrix(s):
             f"Gate: **{s['gate']}** ({s['untriaged']} High or Medium not in `security/zap/baseline.json`"
             + (f"; no ZAP report for {', '.join(s['roles_without_report'])}" if s["roles_without_report"] else "")
             + (f"; signed out by the end of its scan: {', '.join(s['roles_signed_out'])}" if s["roles_signed_out"] else "")
-            + (f"; aerie was not running: {' | '.join(s['aerie_down'])}" if s.get("aerie_down") else "") + ")", "",
+            + (f"; aerie stopped without a reason in its log: {' | '.join(s['aerie_unexplained_stops'])}" if s.get("aerie_unexplained_stops") else "") + ")", "",
+            *( [f"aerie restarted on purpose during the scans: {', '.join(s['aerie_restart_reasons'])}.", ""] if s.get("aerie_restart_reasons") else []),
             f"Contract `{s['contract']}`: {s['operations']} operations; {s['token_closed_operations']} are closed to tokens "
             "(`x-kb-api-token: closed`), so every role scans with a web session. Not scanned: "
             + ", ".join(f"`{x}`" for x in s["excluded"]) + ".", "",

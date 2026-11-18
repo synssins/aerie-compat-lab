@@ -20,6 +20,12 @@
       "uri": "http://aerie:8080/.*",
       "verdict": "false positive",
       "reason": "ZAP's PII rule matched a digit run that passes the card-number checksum, e.g. 4213752181763 and 566996069030158. The answers were refusals (401 or 404) whose RFC 9457 problem body carries a random W3C traceId ('00-<32 hex>-<16 hex>-00'); a fresh answer has a different traceId and no such number. aerie stores no card data. Seen 2026-11-16 on GET /api/v1/admin/spaces/{id} (anonymous), /api/v1/imports/files/id (admin) and /api/v1/ui/plugins (owner, signed out at the time). Matching is by rule for all URLs, so a real card number in an answer would also pass: recheck when this rule fires on a 2xx."
+    },
+    {
+      "pluginid": "10106",
+      "uri": "http://aerie:8080/.*",
+      "verdict": "false positive",
+      "reason": "ZAP's HTTP Only Site rule fires because the lab serves aerie over plain http on its internal network; it tried https://aerie:8080 and could not connect. A real site serves aerie behind TLS, and aerie sends HSTS (one year) since 2cf1f9c. First seen on the admin scan of image 2cf1f9c, 2026-11-18."
     }
   ]
 }
