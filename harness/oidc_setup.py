@@ -88,25 +88,43 @@ def control(ctx, user, mode):
 
 
 def sign_in_once(base, ctx, method, user, mode, return_to="/"):
-    """One sign-in as a browser would do it. Returns (signed-in user name or None, steps)."""
-    control(ctx, user, mode)
-    b, steps = Browser(ctx), []
-    url = f"{base}/api/v1/auth/methods/{PLUGIN_ID}/{method}/start?returnTo={urllib.parse.quote(return_to, safe='')}"
-    for _ in range(6):
-        status, headers, body = b.get(url)
-        steps.append(f"GET {url.split('?')[0]} -> {status}" + (f": {body[:160].decode('utf-8', 'replace')}" if status >= 400 else ""))
-        nxt = location(status, headers, body)
-        if not nxt:
+    """One sign-in as a browser would do it, waiting out aerie's rate limit (up to 3 tries).
+    Returns {who, message, back, throttled, steps}: who is the signed-in user name or None, message the sign-in
+    screen's message, back the address the browser ended at (a path on this site, or the full address elsewhere)."""
+    for attempt in range(3):
+        control(ctx, user, mode)
+        b, steps, back, wait = Browser(ctx), [], None, None
+        url = f"{base}/api/v1/auth/methods/{PLUGIN_ID}/{method}/start?returnTo={urllib.parse.quote(return_to, safe='')}"
+        for _ in range(6):
+            status, headers, body = b.get(url)
+            steps.append(f"GET {url.split('?')[0]} -> {status}" + (f": {body[:160].decode('utf-8', 'replace')}" if status >= 400 else ""))
+            if status == 429:
+                wait = int(headers.get("Retry-After") or 60)
+                break
+            nxt = location(status, headers, body)
+            if not nxt:
+                break
+            url = urllib.parse.urljoin(url, nxt)
+            if not url.startswith((base, ISSUER)):
+                back = url  # the browser would leave the site here; the lab does not follow it
+                break
+            if url.startswith(base) and "/callback" not in url and "/start" not in url:
+                back = url[len(base):]
+                break
+        if wait is None:
             break
-        url = urllib.parse.urljoin(url, nxt)
-        if url.startswith(base) and "/callback" not in url and "/start" not in url:
-            steps.append(f"back at {url[len(base):][:120]}")
-            break
+        steps.append(f"rate limited; waiting {wait} s")
+        time.sleep(min(wait, 120) + 1)
     status, _, body = b.get(base + "/api/v1/me")
     me = json.loads(body) if status == 200 else {}
     outcome = b.get(base + "/api/v1/auth/methods/outcome")[2][:300].decode("utf-8", "replace")
     steps.append(f"me -> {status}; outcome {outcome}")
-    return me.get("userName") or me.get("user", {}).get("userName") if status == 200 else None, steps
+    try:
+        message = json.loads(outcome).get("message")
+    except ValueError:
+        message = None
+    who = (me.get("userName") or (me.get("user") or {}).get("userName")) if status == 200 else None
+    return {"who": who, "message": message, "back": back, "throttled": wait is not None, "steps": steps}
 
 
 def main():
@@ -162,24 +180,26 @@ def main():
 
     rows = []
     for mode, user, admitted in CASES:
-        who, steps = sign_in_once(base, ctx, method, user, mode)
-        ok = bool(who) == admitted
+        r = sign_in_once(base, ctx, method, user, mode)
+        # A refusal counts only when aerie refused the sign-in itself (its sign-in screen message), not a rate limit.
+        ok = not r["throttled"] and (bool(r["who"]) if admitted else (not r["who"] and bool(r["message"])))
         rows.append({"mode": mode, "user": user, "expected": "signed in" if admitted else "refused",
-                     "got": f"signed in as {who}" if who else "refused", "result": "PASS" if ok else "FAIL", "steps": steps})
-        time.sleep(1)  # stays under aerie's sign-in rate limit
+                     "got": "rate limited" if r["throttled"] else (f"signed in as {r['who']}" if r["who"] else f"refused: {r['message']}"),
+                     "result": "PASS" if ok else ("ERROR" if r["throttled"] else "FAIL"), "steps": r["steps"]})
     for bad in ("https://evil.example/x", "//evil.example/x", "/\\evil.example/x"):
-        who, steps = sign_in_once(base, ctx, method, "lab-oidc-new", "ok", bad)
-        back = next((s for s in steps if s.startswith("back at")), "")
-        ok = "evil.example" not in back
-        rows.append({"mode": f"ok, returnTo {bad}", "user": "lab-oidc-new", "expected": "returns to this site",
-                     "got": back or "no return", "result": "PASS" if ok else "FAIL", "steps": steps})
+        r = sign_in_once(base, ctx, method, "lab-oidc-new", "ok", bad)
+        on_site = bool(r["back"]) and r["back"].startswith("/") and not r["back"].startswith(("//", "/\\")) and "evil.example" not in r["back"]
+        ok = not r["throttled"] and bool(r["who"]) and on_site
+        rows.append({"mode": f"ok, returnTo {bad}", "user": "lab-oidc-new", "expected": "signed in, back on this site",
+                     "got": "rate limited" if r["throttled"] else f"{'signed in' if r['who'] else 'not signed in'}, back at {r['back']}",
+                     "result": "PASS" if ok else ("ERROR" if r["throttled"] else "FAIL"), "steps": r["steps"]})
     report["cases"] = rows
     (out / "setup.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
     md = ["# OIDC sign-in through aerie.signin.oidc", "", f"Provider `{prov['id']}`, method id `{method}`, plugin state {report['plugin_state']}.", "",
           "| Mode | User | Expected | Got | Result |", "|---|---|---|---|---|"]
     md += [f"| {r['mode']} | {r['user']} | {r['expected']} | {r['got']} | {r['result']} |" for r in rows]
     fails = sum(r["result"] != "PASS" for r in rows)
-    md += ["", f"Totals: PASS {len(rows) - fails}, FAIL {fails}"]
+    md += ["", "Totals: " + ", ".join(f"{k} {sum(r['result'] == k for r in rows)}" for k in ("PASS", "FAIL", "ERROR"))]
     (out / "matrix.md").write_text("\n".join(md) + "\n", encoding="utf-8")
     print("\n".join(md))
     return 1 if fails else 0
