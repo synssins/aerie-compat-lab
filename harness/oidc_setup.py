@@ -7,8 +7,9 @@ Usage (runner container, after harness/seed.py and before the hand-off is redact
 Routes are aerie's own admin API as published in aerie's docs/api-reference.md and docs/plugins/developer-guide.md
 at commit 2cf1f9c (no contract release has them yet): POST /api/v1/admin/plugins (package bytes, X-File-Name),
 POST /api/v1/admin/plugins/{id}/signin-providers, GET and PUT /api/v1/admin/plugins/{id}/settings, the sign-in
-routes under /api/v1/auth/methods. The provider settings' keys start with "signIn." and are not documented one by
-one, so they are taken from the plugin's settings list by their labels.
+routes under /api/v1/auth/methods. Provider settings are signIn.<provider id>.<name> (issuer, discovery, clientId,
+clientSecret, scopes, subjectClaim, emailClaim, emailVerifiedClaim, nameClaim, userInfo, requiredClaim, requiredValues,
+newAccounts, privateNetwork), as the build room gave them for 2cf1f9c.
 """
 import argparse
 import hashlib
@@ -24,14 +25,12 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "security/zap"))
-from seed import Aerie, SeedError, wait_until_up  # noqa: E402
+from seed import SeedError, wait_until_up  # noqa: E402
 from scan import sign_in  # noqa: E402
 
 PLUGIN_ID = "aerie.signin.oidc"
 PLUGIN_SHA256 = "d8b19f7195140f1324e3dc0bb305ac8145ca53308e490ce12ef9a3e238b809d6"  # aerie.signin.oidc-1.0.0.kbplugin, 13,530 bytes
 ISSUER = "https://oidc:8443"
-LABELS = {"issuer": "issuer", "client id": "clientId", "client secret": "clientSecret", "new accounts": "newAccounts",
-          "provider on a private network": "privateNetwork"}
 # mode -> whether aerie must let the person in. Every other mode is a provider that misbehaves.
 CASES = [("ok", "lab-oidc-new", True), ("ok", "lab-oidc-link", True), ("ok", "lab-oidc-unverified", False)] + [
     (m, "lab-oidc-new", False) for m in ("bad_signature", "alg_none", "wrong_issuer", "wrong_audience", "wrong_nonce",
@@ -110,16 +109,6 @@ def sign_in_once(base, ctx, method, user, mode, return_to="/"):
     return me.get("userName") or me.get("user", {}).get("userName") if status == 200 else None, steps
 
 
-def provider_settings(admin, pid):
-    """The settings keys of one provider, by label, from the plugin's settings list."""
-    plugin = next(p for p in admin.call("GET", "/admin/plugins")["plugins"] if p["id"] == PLUGIN_ID)
-    keys = {}
-    for s in plugin.get("settings") or []:
-        if pid in s["key"] and s.get("label", "").strip().lower() in LABELS:
-            keys[LABELS[s["label"].strip().lower()]] = s["key"]
-    return keys, [s["key"] for s in plugin.get("settings") or []]
-
-
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--harness", default="reports/harness.json")
@@ -155,15 +144,14 @@ def main():
     report["plugin_state"] = plugin.get("state")
 
     prov = admin.call("POST", f"/admin/plugins/{PLUGIN_ID}/signin-providers", {"title": "Lab provider"})
-    keys, all_keys = provider_settings(admin, prov["id"])
-    report.update(provider=prov, setting_keys=keys, all_setting_keys=all_keys)
+    report["provider"] = prov
     secret = os.environ.get("OIDC_CLIENT_SECRET") or ""
-    missing = [k for k in ("issuer", "clientId", "clientSecret", "privateNetwork", "newAccounts") if k not in keys]
-    if missing or not secret:
-        (out / "setup.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
-        raise SystemExit(f"provider settings not found by label: {missing} (all keys in {out / 'setup.json'})" if missing else "set OIDC_CLIENT_SECRET")
-    values = {keys["issuer"]: ISSUER, keys["clientId"]: "lab-aerie", keys["clientSecret"]: secret,
-              keys["privateNetwork"]: "true", keys["newAccounts"]: "true"}
+    if not secret:
+        raise SystemExit("set OIDC_CLIENT_SECRET")
+    # Keys signIn.<provider id>.<name>, named by the build room for 2cf1f9c (not yet in aerie's docs).
+    k = f"signIn.{prov['id']}."
+    values = {k + "issuer": ISSUER, k + "clientId": "lab-aerie", k + "clientSecret": secret,
+              k + "privateNetwork": "true", k + "newAccounts": "true", k + "userInfo": "true"}
     report["saved"] = admin.call("PUT", f"/admin/plugins/{PLUGIN_ID}/settings", {"values": values})
     # The account the provider's lab-oidc-link user is matched to by its verified address.
     admin.call("POST", "/admin/users/invite", {"userName": "lab-oidc-link", "displayName": "Lab OIDC Link", "isAdmin": False,
