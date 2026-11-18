@@ -72,7 +72,7 @@ The gate is **FAIL** in these cases:
 - a High or Medium instance matches no entry in [baseline.json](baseline.json);
 - a role produced no report;
 - a role's session no longer works right after its scan, because its scan then ran at least partly signed out.
-- aerie stopped running during a scan. `run-lab.sh` checks before each role, records the container's state (exit code, OOM kill) and its last log lines as `aerie-down-before-<role>.log`, and starts it again so the remaining roles still scan. aerie's log for the whole ZAP stage is kept as `security-zap/aerie.log`.
+- aerie stopped or restarted during a scan. aerie ends its own process on purpose after plugin changes, and the lab's aerie has `restart: unless-stopped`. `run-lab.sh` checks before each role. On a stop or a new restart it records the container's state (restart count, exit code, OOM kill) and its last log lines as `aerie-down-before-<role>.log`, and starts aerie if it is still down so the remaining roles still scan. A restart counts as a finding only when its log shows something other than an intended restart. aerie's log for the whole ZAP stage is kept as `security-zap/aerie.log`.
 
 Triaged entries carry one of these verdicts:
 

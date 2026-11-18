@@ -9,6 +9,9 @@ name: aerie-lab
 services:
   aerie:
     image: ghcr.io/synssins/aerie:${AERIE_TAG:?set AERIE_TAG to the image tag under test, e.g. sha-cd7b0e8}
+    # aerie ends its own process on purpose after a plugin install, removal, enable or disable, or a plugin setting
+    # that needs a restart, and relies on the host to start it again.
+    restart: unless-stopped
     ports:
       - "${AERIE_PORT:-8080}:8080"
     # Optional settings for the image (git-ignored); seeding needs none.
