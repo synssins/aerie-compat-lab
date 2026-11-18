@@ -15,18 +15,24 @@ Every lab run on the Docker host (`harness/run-on-host.sh`, which sets `ZAP=1`) 
 1. **`scan.py prep`**, in the runner container:
    - Adds `lab-contributor`, `lab-supervisor` and `lab-owner`. It makes the space `SCAN` with one page and grants each account its role there. `lab-user` holds Reader on `SCAN`, and `lab-admin` is the administrator.
    - Signs each role in for a web session.
-   - Takes `aerie/openapi.yaml` and `datacenter/openapi.yaml` from the contract release pinned in `clients/specs.csv` and checks its SHA-256.
-   - Points path parameters at real objects. Space and page ids name `PRIV` and its home page, which only `lab-admin` may see. User ids name `lab-noaccess`, group ids `lab-readers`, and token ids `lab-admin-pat-lab`.
+   - Takes `aerie/openapi.yaml` and `datacenter/openapi.yaml` from the newest contract release, `contracts-v9`, pinned by SHA-256 in `SCAN_CONTRACT` in `scan.py` (the suites keep their own pin in `clients/specs.csv`).
+   - Writes `methods.json`, a lab-made definition of the plugin sign-in routes (`/api/v1/auth/methods`, `/outcome`, `/{plugin}/{method}/start`, `/{plugin}/{method}/callback`), which no contract release describes yet. Plugin and method come from `GET /api/v1/auth/methods`; the query names (`returnUrl`, `returnTo`, `return`, `redirect`, `state`, `code`, `error`) are probes.
+   - Points path parameters at real objects. Space and page ids name `PRIV` and its home page, which only `lab-admin` may see. User ids name `lab-noaccess`, group ids `lab-readers`, token ids `lab-admin-pat-lab`, and plugin ids the first plugin `GET /api/v1/admin/plugins` lists.
    - Runs the lab access check. Every GET with real ids runs as every role. These answers are flagged:
      - any 2xx to an anonymous caller where the definition asks for authentication;
      - any 2xx for a role other than the administrator on `/api/v1/admin/`;
      - any 2xx for a role other than the administrator on `PRIV` or its page.
+   - Runs three lab probes, recorded under `probes` in `prep.json`; a broken rule is a High (or, for a 5xx, Medium) `lab-access` finding:
+     - **Plugin sign-in without a provider**: as anonymous and Reader, the outcome route, `start` with off-site return paths (`https://evil.example/x`, `//evil.example/x`, `/\evil.example/x`), and `callback` with no state, a forged state, a code only and an error. Flags a redirect off the site, a session cookie from a callback without a valid state, and any 5xx.
+     - **Page history for members only**: a page with two versions in a new `SignedIn` space `HIST`, where Reader is not a member. Reader and anonymous must be refused `versions`, a version, `diff`, and on the vendor surface `history` and `version/1`, and the page's `history` field must be empty. The creator's answers are kept as the control.
+     - **Deleting a user**: a fresh local user `lab-delete-me`. Every role but the administrator must be refused `DELETE /api/v1/admin/users/{id}`; the administrator's delete and the read after it are recorded. The user sources present are recorded. Only local users can be made: no identity provider is reachable from the scan network.
    - Writes one Automation Framework plan per role.
 2. **One ZAP container per role**, each followed by `scan.py after`. That step checks the role's session still works and keeps the text around the evidence of each High and Medium GET for triage. The roles run in this order: anonymous, reader, contributor, supervisor, owner, admin. The administrator comes last because its scan may change settings or objects. Each plan has these jobs:
    - `insights` with `exitAutoLevel` blank. Otherwise ZAP's Insights add-on ends the plan at its "100% authentication failures" insight, which an active scan of refused requests always raises.
    - `replacer`, which adds the role's session cookie and `X-Atlassian-Token: no-check` to every request.
-   - `openapi` imports of both definitions.
+   - `openapi` imports of both definitions and of `methods.json`.
    - `spider` on the web app for 5 minutes.
+   - `spiderAjax`, the browser-driven spider, for 10 minutes: headless Firefox inside the ZAP container (`shm_size: 1gb`), browsing through ZAP's proxy so the replacer adds the session. It stays on the internal network like the rest of ZAP.
    - A full `activeScan` with the default policy and no time limit.
    - A `traditional-json` report.
 3. **`scan.py report`**:
@@ -48,7 +54,7 @@ These are excluded from the scan context and removed from the definitions ZAP im
 - `/api/v1/admin/auth/local/disable`
 - `DELETE /api/v1/me/codes` (the path's `GET` is scanned). Turning sign-in codes off ends every session of the account and gives the caller a new cookie, even when codes were not on. The scan keeps sending the old cookie, so the rest of its scan would run signed out. A run on 2026-11-16 lost the Reader, Contributor, Supervisor and Owner sessions this way. The administrator kept its session, because administrators cannot turn codes off.
 
-The web app is a single-page app. The traditional spider and the passive scan cover its HTML and scripts, and the API it calls is covered through the definitions. The browser-driven AJAX spider is not run.
+The web app is a single-page app. The traditional spider and the AJAX spider cover its HTML, scripts and client-side routes (plugin settings pages among them), and the API it calls is covered through the definitions.
 
 ## Results and the gate
 

@@ -52,6 +52,8 @@ services:
       # Java's preferences store would otherwise warn every 30 s that it cannot write under the image's home.
       _JAVA_OPTIONS: -Djava.util.prefs.userRoot=/tmp/zap-prefs
     networks: [scan]
+    # Firefox for the AJAX spider needs more shared memory than Docker's 64 MB default.
+    shm_size: 1gb
     volumes:
       - ../reports/security-zap/work:/zap/wrk
 

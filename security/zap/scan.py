@@ -33,6 +33,7 @@ import sys
 import tarfile
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -41,7 +42,10 @@ sys.path.insert(0, str(LAB / "harness"))
 from redact import scrub  # noqa: E402
 from seed import Aerie, SeedError, totp  # noqa: E402
 
-CONTRACT = "aerie-dc-contracts-v6"
+# The scan imports the newest contract release (plugins, page history, user deletion), pinned here so the
+# suites keep their own pin in clients/specs.csv. contracts-v9, retrieved 2026-11-17.
+SCAN_CONTRACT = ("contracts-v9", "https://github.com/synssins/aerie-spec/releases/download/contracts-v9/contracts-v9.tar.gz",
+                 "b24ccc7cebde41efdb16fdfd154e95fe43a6565f1fb25d6960566542e43537b6")
 TARGET = "http://aerie:8080"
 SCAN_SPACE = "scan"
 # (role, account, space role on SCAN); the Reader and the administrator are seeded by harness/seed.py.
@@ -80,9 +84,7 @@ def cookie_header(session):
 
 def contract_definitions(work):
     """Both definitions of the pinned contract release, as JSON (converted with the pinned generator jar)."""
-    row = next(line.split(",") for line in (LAB / "clients/specs.csv").read_text(encoding="utf-8").splitlines()
-               if line.startswith(CONTRACT + ","))
-    url, sha = row[3].split("#")[0], row[4].strip()
+    _, url, sha = SCAN_CONTRACT
     raw = urllib.request.urlopen(url, timeout=120).read()
     if hashlib.sha256(raw).hexdigest() != sha:
         raise SystemExit(f"REFUSED {url}: SHA-256 is not the pinned {sha}")
@@ -104,7 +106,7 @@ def point_at(spec, ids):
     """Gives each path parameter an example naming a real object, so ZAP's requests reach it."""
     rules = [(r"/api/v1/(admin/)?spaces/\{id\}", ids["space"]), (r"/api/v1/pages/\{id\}", ids["page"]),
              (r"/api/v1/(admin/)?users/\{id\}", ids["user"]), (r"/api/v1/admin/groups/\{id\}", ids["group"]),
-             (r"/api/v1/tokens/\{id\}", ids["token"])]
+             (r"/api/v1/tokens/\{id\}", ids["token"]), (r"/api/v1/admin/plugins/\{id\}", ids.get("plugin"))]
     for path, item in spec["paths"].items():
         value = next((v for rx, v in rules if re.match(rx, path)), None)
         for p in item.get("parameters", []) + [p for op in item.values() if isinstance(op, dict) for p in op.get("parameters", [])]:
@@ -163,6 +165,139 @@ def access_check(base, sessions, specs, ids):
     return findings, calls
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *a, **k):
+        return None
+
+
+def raw(base, method, url, cookie=""):
+    """One request without following redirects: (status, headers, first 400 bytes of the body)."""
+    req = urllib.request.Request(base + url, method=method, headers={"Accept": "application/json", **({"Cookie": cookie} if cookie else {})})
+    try:
+        with urllib.request.build_opener(_NoRedirect).open(req, timeout=30) as r:
+            return r.status, r.headers, r.read(400)
+    except urllib.error.HTTPError as e:
+        return e.code, e.headers, e.read(400)
+
+
+def finding(role, method, url, status, body, why, risk="High"):
+    return {"role": role, "pluginid": "lab-access", "alert": "Access control (lab access check)", "risk": risk,
+            "confidence": "High", "method": method, "uri": TARGET + url, "param": "",
+            "evidence": f"HTTP {status}: {body.decode('utf-8', 'replace')[:200]}", "otherinfo": why}
+
+
+# Plugin sign-in routes are not in any contract release yet (named by the spec room, 2026-11-17). No provider is
+# reachable from the scan network, so the lab scans what answers without one. The query names are probes.
+METHOD_PATHS = ["/api/v1/auth/methods", "/api/v1/auth/methods/outcome", "/api/v1/auth/methods/{plugin}/{method}/start",
+                "/api/v1/auth/methods/{plugin}/{method}/callback"]
+RETURN_PARAMS = ["returnUrl", "returnTo", "return", "redirect"]
+OFFSITE = ["https://evil.example/x", "//evil.example/x", "/\\evil.example/x"]
+
+
+def methods_definition(plugin, method):
+    """An OpenAPI fragment for the plugin sign-in routes, so ZAP's import and active scan reach them."""
+    q = lambda names: [{"name": n, "in": "query", "schema": {"type": "string"}, "example": "/"} for n in names]  # noqa: E731
+    path = [{"name": "plugin", "in": "path", "required": True, "schema": {"type": "string"}, "example": plugin},
+            {"name": "method", "in": "path", "required": True, "schema": {"type": "string"}, "example": method}]
+    ops = [{}, {}, {"parameters": path + q(RETURN_PARAMS)}, {"parameters": path + q(["state", "code", "error", "error_description"])}]
+    return {"openapi": "3.0.3", "info": {"title": "lab: plugin sign-in methods", "version": "lab"},
+            "paths": {p: {"get": {"responses": {"default": {"description": "any"}}, **o}} for p, o in zip(METHOD_PATHS, ops)}}
+
+
+def sign_in_methods(base, sessions):
+    """Answers of the plugin sign-in routes without a provider: state handling, return path, error paths.
+    Flags a 5xx, a redirect off the site, and a callback with no or a forged state that signs anyone in."""
+    status, _, body = raw(base, "GET", "/api/v1/auth/methods")
+    seen = {"GET /api/v1/auth/methods": f"HTTP {status}: {body.decode('utf-8', 'replace')[:300]}"}
+    try:
+        listed = json.loads(body) if status == 200 else []
+        listed = listed.get("methods", listed) if isinstance(listed, dict) else listed
+        first = next((m for m in listed if isinstance(m, dict)), {})
+        plugin, method = first.get("plugin") or first.get("pluginId") or "lab-none", first.get("method") or first.get("id") or "lab-none"
+    except ValueError:
+        plugin, method = "lab-none", "lab-none"
+    findings = []
+    start, callback = f"/api/v1/auth/methods/{plugin}/{method}/start", f"/api/v1/auth/methods/{plugin}/{method}/callback"
+    urls = ["/api/v1/auth/methods/outcome", start, callback, callback + "?error=access_denied",
+            callback + "?state=lab-forged&code=lab", callback + "?code=lab"]
+    urls += [f"{start}?{p}={urllib.parse.quote(v, safe='')}" for p in RETURN_PARAMS for v in OFFSITE]
+    urls += [f"/api/v1/auth/methods/outcome?{p}={urllib.parse.quote(v, safe='')}" for p in RETURN_PARAMS for v in OFFSITE]
+    for role in ("anonymous", "reader"):
+        for url in urls:
+            status, headers, body = raw(base, "GET", url, sessions[role])
+            loc = headers.get("Location") or ""
+            seen[f"{role} GET {url}"] = f"HTTP {status}" + (f" Location {loc}" if loc else "") + f": {body.decode('utf-8', 'replace')[:160]}"
+            host = urllib.parse.urlsplit(loc.replace("\\", "/")).netloc
+            cookies = [c for c in headers.get_all("Set-Cookie") or [] if c.startswith("__Host-kb=") and "=;" not in c[:12]]
+            if status >= 500:
+                findings.append(finding(role, "GET", url, status, body, "server error on a plugin sign-in route", "Medium"))
+            if host and host not in ("aerie:8080", "aerie"):
+                findings.append(finding(role, "GET", url, status, loc.encode(), f"redirect off the site to {loc}"))
+            if "callback" in url and "error=" not in url and cookies:
+                findings.append(finding(role, "GET", url, status, body, "callback without a valid state set a session cookie"))
+    return findings, {"plugin": plugin, "method": method, "answers": seen}
+
+
+def history_check(base, admin, sessions):
+    """Page history is for members of the space only: in a Signed-in space where Reader is not a member, the page
+    itself answers (control), but its versions, version, diff and the page's history field are refused."""
+    sid = admin.call("POST", "/spaces", {"name": "History", "key": "hist", "description": "security/zap history",
+                                         "isSensitive": False, "visibility": "SignedIn"})["id"]
+    page = admin.call("POST", f"/spaces/{sid}/pages", {"parentId": None, "kind": "Page", "title": "History Home", "tags": None,
+                                                        "contentJson": json.dumps({"type": "doc", "content": []})})
+    pid, notes = page["id"], {}
+    try:
+        cur = admin.call("GET", f"/pages/{pid}")
+        admin.call("PUT", f"/pages/{pid}", {"title": "History Home", "baseVersion": str(cur.get("version")), "major": True, "note": "v2",
+                                             "contentJson": json.dumps({"type": "doc", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "v2"}]}]})})
+    except SeedError as e:
+        notes["second_version"] = str(e)[:300]
+    versions = admin.call("GET", f"/pages/{pid}/versions")
+    items = versions.get("versions", versions.get("items", [])) if isinstance(versions, dict) else versions or []
+    nums = [str(v.get("version", v.get("number", v.get("id")))) for v in items if isinstance(v, dict)] or ["1"]
+    status, body = get(base + "/rest/api/content?spaceKey=HIST&title=History%20Home", cookie_header(admin))
+    dc_id = (json.loads(body).get("results") or [{}])[0].get("id") if status == 200 and body.lstrip()[:1] == "{" else None
+    refused = [f"/api/v1/pages/{pid}/versions", f"/api/v1/pages/{pid}/versions/{nums[-1]}",
+               f"/api/v1/pages/{pid}/diff?from={nums[0]}&to={nums[-1]}"]
+    if dc_id:
+        refused += [f"/rest/api/content/{dc_id}/history", f"/rest/api/content/{dc_id}/version/1"]
+    findings, seen = [], {"page": pid, "dc_id": dc_id, "versions": nums, **notes}
+    for role in ("reader", "anonymous"):
+        status, body = get(base + f"/api/v1/pages/{pid}", sessions[role])
+        seen[f"{role} GET page"] = f"HTTP {status}"
+        history = json.loads(body).get("history") if status == 200 and body.lstrip()[:1] == "{" else None
+        seen[f"{role} page history field"] = json.dumps(history)[:200]
+        if history:
+            findings.append(finding(role, "GET", f"/api/v1/pages/{pid}", status, json.dumps(history).encode(),
+                                    "a non-member got the page's history field in a Signed-in space"))
+        for url in refused:
+            status, _, body = raw(base, "GET", url, sessions[role])
+            seen[f"{role} GET {url}"] = f"HTTP {status}"
+            if 200 <= status < 300:
+                findings.append(finding(role, "GET", url, status, body, "a non-member got page history in a Signed-in space"))
+    for url in refused[:3]:  # control: the space's member (its creator) gets them
+        seen[f"admin GET {url}"] = f"HTTP {raw(base, 'GET', url, cookie_header(admin))[0]}"
+    return findings, seen
+
+
+def delete_user_check(base, admin, sessions):
+    """Deleting a user: refused for every role but the administrator, done for the administrator, gone afterwards.
+    Only local users can be made here (no identity provider is reachable); the sources present are recorded."""
+    users = admin.call("GET", "/admin/users")
+    users = users.get("users", users.get("items", [])) if isinstance(users, dict) else users
+    seen = {"sources": sorted({u.get("source", "?") for u in users if isinstance(u, dict)})}
+    inv = admin.call("POST", "/admin/users/invite", {"userName": "lab-delete-me", "displayName": "Lab Delete Me", "isAdmin": False})
+    url, findings = f"/api/v1/admin/users/{inv['id']}", []
+    for role, _, _ in ROLES[:-1]:
+        status, _, body = raw(base, "DELETE", url, sessions[role])
+        seen[f"{role} DELETE"] = f"HTTP {status}"
+        if 200 <= status < 300:
+            findings.append(finding(role, "DELETE", url, status, body, f"{role} deleted a user"))
+    seen["admin DELETE"] = f"HTTP {raw(base, 'DELETE', url, cookie_header(admin))[0]}"
+    seen["admin GET after delete"] = f"HTTP {raw(base, 'GET', url, cookie_header(admin))[0]}"
+    return findings, seen
+
+
 def plan(role, cookie):
     rules = [{"description": "vendor-surface writes", "matchType": "req_header", "matchString": "X-Atlassian-Token",
               "matchRegex": False, "replacementString": "no-check"}]
@@ -180,7 +315,12 @@ def plan(role, cookie):
             {"type": "replacer", "parameters": {"deleteAllRules": True}, "rules": rules},
             {"type": "openapi", "parameters": {"apiFile": "/zap/wrk/aerie.json", "targetUrl": TARGET, "context": "aerie"}},
             {"type": "openapi", "parameters": {"apiFile": "/zap/wrk/datacenter.json", "targetUrl": TARGET, "context": "aerie"}},
+            {"type": "openapi", "parameters": {"apiFile": "/zap/wrk/methods.json", "targetUrl": TARGET, "context": "aerie"}},
             {"type": "spider", "parameters": {"context": "aerie", "url": TARGET + "/", "maxDuration": 5}},
+            # The browser-driven spider: headless Firefox in the ZAP image, through ZAP's proxy (so the replacer adds
+            # the session), on the internal scan network only. It reaches the web app's routes, plugin settings pages among them.
+            {"type": "spiderAjax", "parameters": {"context": "aerie", "url": TARGET + "/", "maxDuration": 10,
+                                                  "browserId": "firefox-headless", "numberOfBrowsers": 2}},
             wait,
             {"type": "activeScan", "parameters": {"context": "aerie"}},
             wait,
@@ -228,6 +368,9 @@ def prep(args):
     aid = h["ids"]["aerie"]
     ids = {"space": aid["spaces"]["PRIV"], "page": aid["pages"]["priv_home"], "user": aid["users"]["lab-noaccess"],
            "group": aid["groups"]["lab-readers"], "token": aid["tokens"]["lab-admin-pat-lab"]}
+    plugins = (admin.call("GET", "/admin/plugins") or {}).get("plugins") or []
+    ids["plugin"] = plugins[0]["id"] if plugins else None
+    probes = {"plugins": [{k: p.get(k) for k in ("id", "state", "source", "settings")} for p in plugins]}
     specs = contract_definitions(work)
     for name, spec in specs.items():
         spec["paths"] = {k: v for k, v in spec["paths"].items() if not any(re.fullmatch(x, k) for x in EXCLUDE)}
@@ -236,7 +379,17 @@ def prep(args):
         point_at(spec, ids)
         (work / f"{name}.json").write_text(json.dumps(spec), encoding="utf-8")
     findings, calls = access_check(base, sessions, specs, ids)
-    ops = [(spec, op) for spec in specs.values() for item in spec["paths"].values() for m, op in item.items()
+    for name, check in (("sign_in_methods", lambda: sign_in_methods(base, sessions)),
+                        ("history", lambda: history_check(base, admin, sessions)),
+                        ("delete_user", lambda: delete_user_check(base, admin, sessions))):
+        try:
+            more, probes[name] = check()
+            findings += more
+        except (SeedError, KeyError, ValueError, OSError) as e:  # one failed probe must not stop the scan
+            probes[name] = {"error": f"{type(e).__name__}: {e}"[:400]}
+    m = probes.get("sign_in_methods", {})
+    (work / "methods.json").write_text(json.dumps(methods_definition(m.get("plugin", "lab-none"), m.get("method", "lab-none"))), encoding="utf-8")
+    ops =[(spec, op) for spec in specs.values() for item in spec["paths"].values() for m, op in item.items()
            if m in ("get", "put", "post", "delete", "patch")]
     token_closed = sum(1 for spec, op in ops if op.get("x-kb-api-token") == "closed")
 
@@ -245,8 +398,8 @@ def prep(args):
     (work / "roles.txt").write_text("\n".join(r for r, _, _ in ROLES) + "\n", encoding="utf-8")
     (work / "secrets.json").write_text(json.dumps(sorted({s for s in secrets if s})), encoding="utf-8")
     (out / "prep.json").write_text(json.dumps({
-        "contract": CONTRACT, "operations": len(ops), "token_closed_operations": token_closed,
-        "excluded": EXCLUDE + [f"{m.upper()} {p}" for m, p in EXCLUDE_OPS], "scan_space": SCAN_SPACE, "access_check_calls": calls, "access_findings": findings,
+        "contract": SCAN_CONTRACT[0], "operations": len(ops), "token_closed_operations": token_closed,
+        "excluded": EXCLUDE + [f"{m.upper()} {p}" for m, p in EXCLUDE_OPS], "scan_space": SCAN_SPACE, "access_check_calls": calls, "access_findings": findings, "probes": probes,
         "roles": {role: (user or "none") for role, user, _ in ROLES}}, indent=2), encoding="utf-8")
     print(f"prep: {len(ops)} operations, {calls} access-check calls, {len(findings)} access finding(s), plans for {len(ROLES)} roles")
 
@@ -331,6 +484,7 @@ def report(args):
     gate = "FAIL" if untriaged or missing or lost else "PASS"
     summary = {"gate": gate, "untriaged": len(untriaged), "roles_without_report": missing, "roles_signed_out": lost, "seconds": times,
                "session_after_scan": alive, **{k: prepped[k] for k in ("contract", "operations", "token_closed_operations", "excluded", "roles", "access_check_calls")},
+               "probes": prepped.get("probes", {}),
                "counts": counts, "high_medium": instances}
     text = scrub(json.dumps(summary, indent=2), secrets)
     (out / "summary.json").write_text(text, encoding="utf-8")
@@ -338,6 +492,7 @@ def report(args):
     (out / "matrix.md").write_text(matrix(summary), encoding="utf-8")
     for f in list((work / "out").glob("*.json")):
         (out / f.name).write_text(scrub(f.read_text(encoding="utf-8"), secrets), encoding="utf-8")
+    (out / "prep.json").write_text(scrub((out / "prep.json").read_text(encoding="utf-8"), secrets), encoding="utf-8")
     for log in out.glob("*.log"):
         log.write_text(scrub(log.read_text(encoding="utf-8", errors="replace"), secrets), encoding="utf-8")
     shutil.rmtree(work)
