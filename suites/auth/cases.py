@@ -826,7 +826,7 @@ def _(ctx):
     s = Aerie(ctx.base)
     s.cookies = {}
     s.call("POST", "/auth/local/signin", {"userName": c["user"], "password": c["password"]})
-    opened = time.time()
+    opened, original = time.time(), dict(s.cookies)
     for at in (60, 300, 540, 780, 840):  # used all along, so an idle timeout cannot be what ends it
         time.sleep(max(0, opened + at - time.time()))
         r = ctx.req("GET", "/api/v1/me", cookies=s.cookies)
@@ -836,8 +836,15 @@ def _(ctx):
             if name.startswith("__Host-kb") and value:
                 s.cookies[name] = value  # a renewed cookie is the same session; it must still end on time
     time.sleep(max(0, opened + 15 * 60 + 45 - time.time()))
-    r = ctx.req("GET", "/api/v1/me", cookies=s.cookies)
-    expect(r.status == 401, f"the session still worked 15 min 45 s after it opened ({r.status}), expected 401")
+    first = ctx.req("GET", "/api/v1/me", cookies=original)
+    renewed = ctx.req("GET", "/api/v1/me", cookies=s.cookies)
+    wrong = []
+    if first.status != 401:
+        wrong.append(f"the cookie given at sign-in still worked 15 min 45 s after it opened ({first.status})")
+    if renewed.status != 401:
+        wrong.append(f"the cookie aerie renewed while the session was used still worked 15 min 45 s after sign-in "
+                     f"({renewed.status}): renewing restarts the maximum age")
+    expect(not wrong, "; ".join(wrong) + "; expected 401 for both")
 
 
 @case("hardening.code.second_use_refused", 11)
@@ -960,6 +967,8 @@ def run(base, handoff, fixtures, failures_dir):
             placed.add(c[0])
         pending = [c for c in pending if c[0] not in placed]
     order += sorted((c for c in CASES if c[0] in LAST), key=lambda c: LAST.index(c[0]))
+    if os.environ.get("LAB_SESSION_MAX_AGE"):  # its 16 minutes first, so the other cases' sessions are fresh when it ends
+        order.sort(key=lambda c: c[0] != "hardening.session.max_age")
     ctx = Ctx(base, handoff, fixtures)
     rows, result = [], {}
     for cid, slice_no, needs, fn in order:
