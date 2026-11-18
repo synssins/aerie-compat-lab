@@ -15,6 +15,7 @@ services:
     env_file:
       - path: aerie.env
         required: false
+    networks: [default, scan]
     volumes:
       # Anonymous volume over the image's data folder: every run starts empty; `down -v` removes it.
       - /app/App_Data
@@ -38,3 +39,24 @@ services:
     working_dir: /lab
     volumes:
       - ..:/lab
+
+  # The security/zap stage (security/zap/README.md): OWASP ZAP 2.17.0, the official image
+  # ghcr.io/zaproxy/zaproxy:stable as of 2026-11-16, pinned by digest. It joins only the network "scan",
+  # which is internal: ZAP reaches the lab's aerie and nothing else, not the host, the LAN or the internet.
+  zap:
+    profiles: [zap]
+    image: ghcr.io/zaproxy/zaproxy@sha256:9624669db72f54d86c4b46a7064518bd9bf79d8c61a4c31befa9923489f328af
+    user: "${LAB_UID:-1000}:${LAB_GID:-1000}"
+    environment:
+      HOME: /tmp
+      # Java's preferences store would otherwise warn every 30 s that it cannot write under the image's home.
+      _JAVA_OPTIONS: -Djava.util.prefs.userRoot=/tmp/zap-prefs
+    networks: [scan]
+    # Firefox for the AJAX spider needs more shared memory than Docker's 64 MB default.
+    shm_size: 1gb
+    volumes:
+      - ../reports/security-zap/work:/zap/wrk
+
+networks:
+  scan:
+    internal: true
