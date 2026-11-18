@@ -99,11 +99,20 @@ if [ "$ZAP" = 1 ] && [ "$seed_rc" = 0 ]; then
   if runner python -I security/zap/scan.py prep --harness reports/harness.json --out reports/security-zap; then
     while read -r role; do
       t0=$(date +%s)
+      # aerie has no restart policy: if an earlier role's scan stopped it, record how and start it again for this role.
+      cid=$(dc ps -aq aerie </dev/null)
+      if [ "$(docker inspect -f '{{.State.Running}}' "$cid" 2>/dev/null)" != true ]; then
+        echo "before $role: $(docker inspect -f 'status={{.State.Status}} exit={{.State.ExitCode}} oom={{.State.OOMKilled}} error={{.State.Error}} finished={{.State.FinishedAt}}' "$cid" 2>&1)" \
+          | tee -a reports/security-zap/work/aerie-down.txt
+        dc logs --no-color --tail 300 aerie </dev/null >"reports/security-zap/aerie-down-before-$role.log" 2>&1 || true
+        dc start aerie </dev/null >/dev/null 2>&1 && runner python -I -c "import sys; sys.path.insert(0, 'harness'); from seed import wait_until_up; wait_until_up('http://aerie:8080', '/api/v1/setup/status', 120)" || true
+      fi
       dc run --rm -T zap zap.sh -cmd -silent -dir /tmp/zap -autorun "/zap/wrk/$role.yaml" </dev/null >"reports/security-zap/$role.log" 2>&1 || echo "zap $role exit $?"
       echo "$role $(( $(date +%s) - t0 ))" >>reports/security-zap/work/times.txt
       runner python -I security/zap/scan.py after --role "$role" --out reports/security-zap || true
       echo "zap $role: $(( ($(date +%s) - t0) / 60 )) min"
     done <reports/security-zap/work/roles.txt
+    dc logs --no-color --tail 2000 aerie </dev/null >reports/security-zap/aerie.log 2>&1 || true
     runner python -I security/zap/scan.py report --harness reports/harness.json --out reports/security-zap || true
   fi
   rm -rf reports/security-zap/work
