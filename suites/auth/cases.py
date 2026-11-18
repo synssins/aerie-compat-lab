@@ -788,17 +788,31 @@ def _(ctx):
 
 @case("hardening.cookie.cross_site_refused", 11, ["auth.cookie.write_needs_xsrf"])
 def _(ctx):
+    """Cookie writes from another site: 403 by Sec-Fetch-Site or by Origin, on the compatible surface and on aerie's
+    own API; 2xx from the same origin. Every variant is tried, and all wrong answers are reported together."""
     s = ctx.session("admin-password")
-    xsrf = {"X-Atlassian-Token": "no-check"}
-    for what, extra in (("Sec-Fetch-Site: cross-site", {"Sec-Fetch-Site": "cross-site"}),
-                        ("Origin of another host", {"Origin": "https://evil.example"})):
-        r = ctx.req("POST", "/rest/api/content", cookies=s.cookies, headers={**xsrf, **extra},
-                    data=new_page("PRIV", f"hardening cross-site {secrets.token_hex(3)}"))
-        expect(r.status == 403, f"cookie write with {what} gave {r.status}, expected 403")
-    r = ctx.req("POST", "/rest/api/content", cookies=s.cookies,
-                headers={**xsrf, "Sec-Fetch-Site": "same-origin", "Origin": ctx.base},
-                data=new_page("PRIV", f"hardening same-origin {secrets.token_hex(3)}"))
-    expect(200 <= r.status < 300, f"cookie write from the same origin gave {r.status}, expected 2xx")
+    space = ctx.h["ids"]["aerie"]["spaces"]["PRIV"]
+    writes = {
+        "compatible surface POST /rest/api/content": lambda extra, n: ctx.req(
+            "POST", "/rest/api/content", cookies=s.cookies, headers={"X-Atlassian-Token": "no-check", **extra},
+            data=new_page("PRIV", f"hardening {n} {secrets.token_hex(3)}")),
+        "aerie API POST /api/v1/spaces/{id}/pages": lambda extra, n: ctx.req(
+            "POST", f"/api/v1/spaces/{space}/pages", cookies=s.cookies, headers=extra,
+            data={"parentId": None, "kind": "Page", "title": f"hardening {n} {secrets.token_hex(3)}", "tags": None,
+                  "contentJson": json.dumps({"type": "doc", "content": []})}),
+    }
+    wrong = []
+    for where, write in writes.items():
+        for what, extra in (("Sec-Fetch-Site: cross-site", {"Sec-Fetch-Site": "cross-site"}),
+                            ("Origin https://evil.example", {"Origin": "https://evil.example"}),
+                            ("Sec-Fetch-Site: same-site", {"Sec-Fetch-Site": "same-site"})):
+            r = write(extra, "cross-site")
+            if r.status != 403:
+                wrong.append(f"{where} with {what}: {r.status}, expected 403")
+        r = write({"Sec-Fetch-Site": "same-origin", "Origin": ctx.base}, "same-origin")
+        if not 200 <= r.status < 300:
+            wrong.append(f"{where} from the same origin: {r.status}, expected 2xx")
+    expect(not wrong, "; ".join(wrong))
 
 
 @case("hardening.session.max_age", 11)
@@ -851,9 +865,9 @@ def _(ctx):
 @case("hardening.cql.deep_nesting_400", 11)
 def _(ctx):
     c = ctx.cred("user")
-    cql = "(" * 2000 + "space = LAB" + ")" * 2000
+    cql = "(" * 600 + "space = LAB" + ")" * 600  # deep, yet a URL under Kestrel's 8 KB request line
     r = ctx.req("GET", "/rest/api/content/search", auth=basic(c["user"], c["password"]), query={"cql": cql})
-    expect(r.status == 400, f"CQL nested 2,000 deep gave {r.status}, expected 400")
+    expect(r.status == 400, f"CQL nested 600 deep gave {r.status}, expected 400")
     alive(ctx)
 
 
@@ -863,9 +877,22 @@ def _(ctx):
     # answer must be 413 before the body is read. Upgrade to "limit + 1 byte" when the limit is in a contract.
     # As the administrator on PRIV's page, so neither a permission nor a scope can be the reason for a refusal.
     path = f"/rest/api/content/{ctx.fx['priv_home']}/child/attachment"
-    status, secs = declared_body(ctx, "POST", path, {"Authorization": basic("lab-admin", ctx.token("lab-admin-pat")),
-                                                     "X-Atlassian-Token": "no-check",
-                                                     "Content-Type": "multipart/form-data; boundary=lab"}, 8 << 30, b"-" * 1024)
+    auth = {"Authorization": basic("lab-admin", ctx.token("lab-admin-pat")), "X-Atlassian-Token": "no-check"}
+    boundary = "lab" + secrets.token_hex(8)
+    crlf = "\r\n"
+    part = (f"--{boundary}{crlf}Content-Disposition: form-data; name=\"file\"; filename=\"lab-{secrets.token_hex(3)}.txt\"{crlf}"
+            f"Content-Type: text/plain{crlf}{crlf}lab upload{crlf}--{boundary}--{crlf}").encode()
+    ctype = {"Content-Type": f"multipart/form-data; boundary={boundary}"}
+    # Control: the same request, complete and small, is accepted; so a refusal below is about the size.
+    req = urllib.request.Request(ctx.base + path, data=part, method="POST", headers={**auth, **ctype, "Accept": "application/json"})
+    try:
+        with OPENER.open(req, timeout=30) as x:
+            control = x.status
+    except urllib.error.HTTPError as e:
+        control = e.code
+    ctx.log.append({"method": "POST", "url": path, "control_upload_status": control})
+    expect(200 <= control < 300, f"the control upload of one small file gave {control}, expected 2xx")
+    status, secs = declared_body(ctx, "POST", path, {**auth, **ctype}, 8 << 30, part[:200])
     expect(status == 413, f"upload with 8 GB declared and 1 KB sent: got {status} after {secs:.1f} s, expected 413 at once")
     alive(ctx)
 
