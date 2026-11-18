@@ -15,6 +15,7 @@ import hashlib
 import json
 import re
 import secrets
+import socket
 import sys
 import time
 import urllib.error
@@ -740,6 +741,133 @@ def _(ctx):
     expect(not leaked, f"the audit log holds {len(leaked)} seeded secret(s): {leaked}")
     whole = sorted({m[:12] + "..." for m in re.findall(r"kb[tor]_[A-Za-z0-9_-]{20,}", text)})
     expect(not whole, f"the audit log holds whole tokens: {whole}")
+
+
+# --- hardening: intended behaviour changes of aerie 2cf1f9c (build room's list, 2026-11-18) ----------------
+
+def declared_body(ctx, method, path, headers, declared, sent=b"", wait=20):
+    """Sends a request whose Content-Length says `declared` bytes but only `sent` of them, and reads the answer.
+    An answer that arrives proves the server decided without reading (consuming) the body.
+    Returns (status or None, seconds)."""
+    u = urllib.parse.urlsplit(ctx.base)
+    head = f"{method} {path} HTTP/1.1\r\nHost: {u.netloc}\r\nContent-Length: {declared}\r\nConnection: close\r\n"
+    head += "".join(f"{k}: {v}\r\n" for k, v in headers.items()) + "\r\n"
+    t0 = time.time()
+    with socket.create_connection((u.hostname, u.port or 80), timeout=wait) as s:
+        s.sendall(head.encode() + sent)
+        try:
+            first = s.recv(200)
+        except (socket.timeout, OSError):
+            first = b""
+    m = re.match(rb"HTTP/1\.[01] (\d{3})", first)
+    ctx.log.append({"method": method, "url": path, "declared_length": declared, "sent": len(sent),
+                    "status": int(m.group(1)) if m else None, "seconds": round(time.time() - t0, 2)})
+    return (int(m.group(1)) if m else None), time.time() - t0
+
+
+def alive(ctx):
+    r = ctx.req("GET", "/api/v1/setup/status")
+    expect(r.status == 200, f"aerie did not answer after the request (setup status {r.status}): the process may have ended")
+
+
+@case("hardening.write.unauthenticated_401", 11)
+def _(ctx):
+    r = ctx.req("POST", "/rest/api/content", headers={"X-Atlassian-Token": "no-check"}, data=new_page("LAB", "hardening anon"))
+    expect(r.status == 401, f"write without sign-in gave {r.status}, expected 401")
+
+
+@case("hardening.write.unauthenticated_401_before_body", 11, ["hardening.write.unauthenticated_401"])
+def _(ctx):
+    # 1 GB declared, 1 KB sent: the 401 must come without the server waiting for the rest.
+    path = f"/rest/api/content/{ctx.fx['lab_home']}/child/attachment"
+    status, secs = declared_body(ctx, "POST", path, {"X-Atlassian-Token": "no-check",
+                                                     "Content-Type": "multipart/form-data; boundary=lab"}, 1 << 30, b"-" * 1024)
+    expect(status == 401, f"upload without sign-in, 1 GB declared and 1 KB sent: got {status} after {secs:.1f} s, expected 401 at once")
+    alive(ctx)
+
+
+@case("hardening.cookie.cross_site_refused", 11, ["auth.cookie.write_needs_xsrf"])
+def _(ctx):
+    s = ctx.session("admin-password")
+    xsrf = {"X-Atlassian-Token": "no-check"}
+    for what, extra in (("Sec-Fetch-Site: cross-site", {"Sec-Fetch-Site": "cross-site"}),
+                        ("Origin of another host", {"Origin": "https://evil.example"})):
+        r = ctx.req("POST", "/rest/api/content", cookies=s.cookies, headers={**xsrf, **extra},
+                    data=new_page("PRIV", f"hardening cross-site {secrets.token_hex(3)}"))
+        expect(r.status == 403, f"cookie write with {what} gave {r.status}, expected 403")
+    r = ctx.req("POST", "/rest/api/content", cookies=s.cookies,
+                headers={**xsrf, "Sec-Fetch-Site": "same-origin", "Origin": ctx.base},
+                data=new_page("PRIV", f"hardening same-origin {secrets.token_hex(3)}"))
+    expect(200 <= r.status < 300, f"cookie write from the same origin gave {r.status}, expected 2xx")
+
+
+@case("hardening.session.max_age", 11)
+def _(ctx):
+    # shortcut: needs a run with aerie's session maximum age at its 15-minute minimum, which would end every
+    # ZAP role's session mid-scan; run it in a run of its own when the setting's name and format are confirmed.
+    raise NotRunnable("needs a dedicated run with Kb__Auth__SessionMaxAge at 15 minutes (it would sign out ZAP's roles)")
+
+
+@case("hardening.code.second_use_refused", 11)
+def _(ctx):
+    c = ctx.cred("admin-password")
+    for _attempt in range(3):
+        if 30 - time.time() % 30 < 8:  # both sign-ins must fall in one 30 s code window
+            time.sleep(30 - time.time() % 30 + 1)
+        code = totp(c["totp_key"])
+        first, second = Aerie(ctx.base), Aerie(ctx.base)
+        for s in (first, second):
+            s.cookies = {}
+            answer = s.call("POST", "/auth/local/signin", {"userName": c["user"], "password": c["password"]}, ok=(200, 409))
+            expect((answer or {}).get("step") == "code", f"admin sign-in did not ask for a code: {answer}")
+        if int(time.time() // 30) == ctx._last_code:
+            time.sleep(30 - time.time() % 30 + 1)
+            continue  # the suite used this window's code already; take the next one
+        window = int(time.time() // 30)
+        try:
+            first.call("POST", "/auth/local/code", {"code": code})
+        except SeedError:
+            ctx._last_code = window
+            continue  # this window's code was used before the case; take the next one
+        r = ctx.req("POST", "/api/v1/auth/local/code", cookies=second.cookies, data={"code": code})
+        ctx._last_code = window
+        if int(time.time() // 30) != window:
+            continue
+        expect(r.status == 401, f"the same code a second time in its window gave {r.status}, expected 401")
+        return
+    raise Fail("could not fit two sign-ins into one code window in 3 tries")
+
+
+@case("hardening.convert.deep_nesting_400", 11)
+def _(ctx):
+    c = ctx.cred("user")
+    deep = "<div>" * 5000 + "x" + "</div>" * 5000
+    r = ctx.req("POST", "/rest/api/contentbody/convert/view", auth=basic(c["user"], c["password"]),
+                headers={"X-Atlassian-Token": "no-check"}, data={"value": deep, "representation": "storage"})
+    expect(r.status == 400, f"convert of 5,000 nested elements gave {r.status}, expected 400")
+    alive(ctx)
+
+
+@case("hardening.cql.deep_nesting_400", 11)
+def _(ctx):
+    c = ctx.cred("user")
+    cql = "(" * 2000 + "space = LAB" + ")" * 2000
+    r = ctx.req("GET", "/rest/api/content/search", auth=basic(c["user"], c["password"]), query={"cql": cql})
+    expect(r.status == 400, f"CQL nested 2,000 deep gave {r.status}, expected 400")
+    alive(ctx)
+
+
+@case("hardening.upload.total_413", 11, ["auth.basic.token_in_password.ok"])
+def _(ctx):
+    # shortcut: the total limit is not published; 8 GB declared is above any limit that makes sense, so the
+    # answer must be 413 before the body is read. Upgrade to "limit + 1 byte" when the limit is in a contract.
+    # As the administrator on PRIV's page, so neither a permission nor a scope can be the reason for a refusal.
+    path = f"/rest/api/content/{ctx.fx['priv_home']}/child/attachment"
+    status, secs = declared_body(ctx, "POST", path, {"Authorization": basic("lab-admin", ctx.token("lab-admin-pat")),
+                                                     "X-Atlassian-Token": "no-check",
+                                                     "Content-Type": "multipart/form-data; boundary=lab"}, 8 << 30, b"-" * 1024)
+    expect(status == 413, f"upload with 8 GB declared and 1 KB sent: got {status} after {secs:.1f} s, expected 413 at once")
+    alive(ctx)
 
 
 # Last three, in this order: the audit scan after everything else, then the lockout (locks lab-lockout and may
