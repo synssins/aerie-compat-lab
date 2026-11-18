@@ -26,6 +26,12 @@
       "uri": "http://aerie:8080/.*",
       "verdict": "false positive",
       "reason": "ZAP's HTTP Only Site rule fires because the lab serves aerie over plain http on its internal network; it tried https://aerie:8080 and could not connect. A real site serves aerie behind TLS, and aerie sends HSTS (one year) since 2cf1f9c. First seen on the admin scan of image 2cf1f9c, 2026-11-18."
+    },
+    {
+      "pluginid": "40014",
+      "uri": "http://aerie:8080/api/v1/.*",
+      "verdict": "false positive",
+      "reason": "Cross Site Scripting Weakness (persistent in JSON response): a title or name stored by an earlier scan request comes back in a JSON answer (seen on /api/v1/search title, /api/v1/spaces/{id}/tree newName, /api/v1/home title). Served as application/json, so it never runs from the answer, and the build room checked the web client: it renders every title as text and inserts no raw HTML anywhere (2026-11-18). Recheck if this rule fires on an answer that is not JSON."
     }
   ]
 }
