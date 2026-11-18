@@ -35,9 +35,17 @@ if [ "$OIDC" = 1 ]; then
   OIDC_CLIENT_SECRET=$(head -c 24 /dev/urandom | od -An -tx1 | tr -d ' 
 '); export OIDC_CLIENT_SECRET  # this run only
 fi
+# SESSION_MAX_AGE=1: aerie's session maximum age at its 15-minute minimum, for hardening.session.max_age only.
+# It ends every session after 15 minutes, so ZAP (16 minutes a role) must not run in the same run.
+SESSION_MAX_AGE=${SESSION_MAX_AGE:-0}
+if [ "$SESSION_MAX_AGE" = 1 ]; then
+  [ "$ZAP" = 1 ] && { echo "SESSION_MAX_AGE=1 cannot run with ZAP=1" >&2; exit 1; }
+  compose_files+=(-f harness/session.compose.yml)
+fi
+export LAB_SESSION_MAX_AGE=$([ "$SESSION_MAX_AGE" = 1 ] && echo 00:15:00 || echo "")
 dc() { docker compose -p "$PROJECT" "${compose_files[@]}" --profile runner --profile zap "$@"; }
 # </dev/null: docker must never read this script's stdin (run-on-host.sh may arrive on it).
-runner() { dc run --rm -T runner "$@" </dev/null; }
+runner() { dc run --rm -T -e LAB_SESSION_MAX_AGE runner "$@" </dev/null; }
 teardown() {
   say "teardown of project $PROJECT"
   dc down -v --remove-orphans </dev/null >/dev/null 2>&1 || true

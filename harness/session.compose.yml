@@ -1,0 +1,6 @@
+# aerie's session maximum age at its minimum, 15 minutes (a time span; the app refuses to start below it), for
+# the auth suite's hardening.session.max_age. Added by run-lab.sh with SESSION_MAX_AGE=1, never together with ZAP.
+services:
+  aerie:
+    environment:
+      Kb__Auth__SessionMaxAge: "00:15:00"

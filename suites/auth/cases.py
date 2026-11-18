@@ -13,6 +13,7 @@ auth.oauth.refresh.after_access_expiry waits five minutes for an access token to
 import base64
 import hashlib
 import json
+import os
 import re
 import secrets
 import socket
@@ -817,9 +818,33 @@ def _(ctx):
 
 @case("hardening.session.max_age", 11)
 def _(ctx):
-    # shortcut: needs a run with aerie's session maximum age at its 15-minute minimum, which would end every
-    # ZAP role's session mid-scan; run it in a run of its own when the setting's name and format are confirmed.
-    raise NotRunnable("needs a dedicated run with Kb__Auth__SessionMaxAge at 15 minutes (it would sign out ZAP's roles)")
+    """A session ends its maximum age after it was opened, however much it is used. Runs only in a run with
+    SESSION_MAX_AGE=1 (aerie's minimum, 15 minutes; harness/session.compose.yml), never together with ZAP."""
+    if os.environ.get("LAB_SESSION_MAX_AGE") != "00:15:00":
+        raise NotRunnable("needs a run of its own with SESSION_MAX_AGE=1 (Kb__Auth__SessionMaxAge 00:15:00); it would end ZAP's sessions")
+    c = ctx.cred("user")
+    s = Aerie(ctx.base)
+    s.cookies = {}
+    s.call("POST", "/auth/local/signin", {"userName": c["user"], "password": c["password"]})
+    opened, original = time.time(), dict(s.cookies)
+    for at in (60, 300, 540, 780, 840):  # used all along, so an idle timeout cannot be what ends it
+        time.sleep(max(0, opened + at - time.time()))
+        r = ctx.req("GET", "/api/v1/me", cookies=s.cookies)
+        expect(r.status == 200, f"the session was refused {at // 60} minutes after it opened ({r.status}), before its maximum age")
+        for name, value in ((h.split(";", 1)[0].partition("=")[0], h.split(";", 1)[0].partition("=")[2])
+                            for h in (r.headers.get_all("Set-Cookie") or [])):
+            if name.startswith("__Host-kb") and value:
+                s.cookies[name] = value  # a renewed cookie is the same session; it must still end on time
+    time.sleep(max(0, opened + 15 * 60 + 45 - time.time()))
+    first = ctx.req("GET", "/api/v1/me", cookies=original)
+    renewed = ctx.req("GET", "/api/v1/me", cookies=s.cookies)
+    wrong = []
+    if first.status != 401:
+        wrong.append(f"the cookie given at sign-in still worked 15 min 45 s after it opened ({first.status})")
+    if renewed.status != 401:
+        wrong.append(f"the cookie aerie renewed while the session was used still worked 15 min 45 s after sign-in "
+                     f"({renewed.status}): renewing restarts the maximum age")
+    expect(not wrong, "; ".join(wrong) + "; expected 401 for both")
 
 
 @case("hardening.code.second_use_refused", 11)
@@ -942,6 +967,8 @@ def run(base, handoff, fixtures, failures_dir):
             placed.add(c[0])
         pending = [c for c in pending if c[0] not in placed]
     order += sorted((c for c in CASES if c[0] in LAST), key=lambda c: LAST.index(c[0]))
+    if os.environ.get("LAB_SESSION_MAX_AGE"):  # its 16 minutes first, so the other cases' sessions are fresh when it ends
+        order.sort(key=lambda c: c[0] != "hardening.session.max_age")
     ctx = Ctx(base, handoff, fixtures)
     rows, result = [], {}
     for cid, slice_no, needs, fn in order:
