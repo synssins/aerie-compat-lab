@@ -9,6 +9,13 @@
       "reason": "ZAP's path traversal rule sends the URL's last segment ('spaces', 'space') as the space key; aerie creates a space with that valid key and answers its JSON. No file is read; the key is stored as data. First seen on the admin scan, 2026-11-16."
     },
     {
+      "pluginid": "6",
+      "uri": "http://aerie:8080/api/v1/me/settings",
+      "param": "codeLanguage",
+      "verdict": "false positive",
+      "reason": "Same mechanism as the space-key entry: ZAP's path traversal rule sends the URL's last segment ('settings') as the value, with confidence Low and no evidence. codeLanguage is a stored per-user preference string that aerie keeps as data; no file is read with it. First seen on the contributor scan of image 2a5fa98, 2026-11-18."
+    },
+    {
       "pluginid": "10062",
       "uri": "http://aerie:8080/.*",
       "verdict": "false positive",

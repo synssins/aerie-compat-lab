@@ -481,8 +481,9 @@ def report(args):
                 inst["response_excerpt"] = after["excerpts"][inst["uri"]]
     untriaged = [i for i in instances if i["triage"] == "untriaged"]
     lost = [r for r, status in alive.items() if status != 200]  # its scan ran, at least partly, signed out
-    gate = "FAIL" if untriaged or missing or lost else "PASS"
-    summary = {"gate": gate, "untriaged": len(untriaged), "roles_without_report": missing, "roles_signed_out": lost, "seconds": times,
+    down = (work / "aerie-down.txt").read_text(encoding="utf-8").splitlines() if (work / "aerie-down.txt").is_file() else []
+    gate = "FAIL" if untriaged or missing or lost or down else "PASS"
+    summary = {"gate": gate, "untriaged": len(untriaged), "roles_without_report": missing, "roles_signed_out": lost, "aerie_down": down, "seconds": times,
                "session_after_scan": alive, **{k: prepped[k] for k in ("contract", "operations", "token_closed_operations", "excluded", "roles", "access_check_calls")},
                "probes": prepped.get("probes", {}),
                "counts": counts, "high_medium": instances}
@@ -504,7 +505,8 @@ def matrix(s):
     rows = ["# security/zap", "",
             f"Gate: **{s['gate']}** ({s['untriaged']} High or Medium not in `security/zap/baseline.json`"
             + (f"; no ZAP report for {', '.join(s['roles_without_report'])}" if s["roles_without_report"] else "")
-            + (f"; signed out by the end of its scan: {', '.join(s['roles_signed_out'])}" if s["roles_signed_out"] else "") + ")", "",
+            + (f"; signed out by the end of its scan: {', '.join(s['roles_signed_out'])}" if s["roles_signed_out"] else "")
+            + (f"; aerie was not running: {' | '.join(s['aerie_down'])}" if s.get("aerie_down") else "") + ")", "",
             f"Contract `{s['contract']}`: {s['operations']} operations; {s['token_closed_operations']} are closed to tokens "
             "(`x-kb-api-token: closed`), so every role scans with a web session. Not scanned: "
             + ", ".join(f"`{x}`" for x in s["excluded"]) + ".", "",
