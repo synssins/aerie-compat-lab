@@ -213,7 +213,9 @@ def sign_in_methods(base, sessions):
         listed = json.loads(body) if status == 200 else []
         listed = listed.get("methods", listed) if isinstance(listed, dict) else listed
         first = next((m for m in listed if isinstance(m, dict)), {})
-        plugin, method = first.get("plugin") or first.get("pluginId") or "lab-none", first.get("method") or first.get("id") or "lab-none"
+        # SignInMethodDto: {"id": "<plugin>/<method>", "name": ...}; with the lab OIDC provider this is a real method.
+        plugin, _, method = (first.get("id") or "lab-none/lab-none").partition("/")
+        method = method or "lab-none"
     except ValueError:
         plugin, method = "lab-none", "lab-none"
     findings = []
