@@ -238,7 +238,8 @@ def sign_in_methods(base, sessions):
             cookies = [c for c in headers.get_all("Set-Cookie") or [] if c.startswith("__Host-kb=") and "=;" not in c[:12]]
             if status >= 500:
                 findings.append(finding(role, "GET", url, status, body, "server error on a plugin sign-in route", "Medium"))
-            if host and host not in ("aerie:8080", "aerie"):
+            # Going to the identity provider (the lab's, at oidc:8443) is how a start works; anything else is off the site.
+            if host and host not in ("aerie:8080", "aerie", "oidc:8443"):
                 findings.append(finding(role, "GET", url, status, loc.encode(), f"redirect off the site to {loc}"))
             # aerie renews the caller's own session cookie on most answers (since 2cf1f9c); only a session for
             # someone else, or any session for an anonymous caller, is a sign-in without a valid state.
@@ -297,14 +298,21 @@ def delete_user_check(base, admin, sessions):
     users = users.get("users", users.get("items", [])) if isinstance(users, dict) else users
     seen = {"sources": sorted({u.get("source", "?") for u in users if isinstance(u, dict)})}
     inv = admin.call("POST", "/admin/users/invite", {"userName": "lab-delete-me", "displayName": "Lab Delete Me", "isAdmin": False})
-    url, findings = f"/api/v1/admin/users/{inv['id']}", []
-    for role, _, _ in ROLES[:-1]:
-        status, _, body = raw(base, "DELETE", url, sessions[role])
-        seen[f"{role} DELETE"] = f"HTTP {status}"
-        if 200 <= status < 300:
-            findings.append(finding(role, "DELETE", url, status, body, f"{role} deleted a user"))
-    seen["admin DELETE"] = f"HTTP {raw(base, 'DELETE', url, cookie_header(admin))[0]}"
-    seen["admin GET after delete"] = f"HTTP {raw(base, 'GET', url, cookie_header(admin))[0]}"
+    # One user of every other source present too (e.g. SignInMethod, made by the lab OIDC provider); never an admin.
+    targets = {"Local": inv["id"]}
+    for u in users:
+        if isinstance(u, dict) and u.get("source") not in targets and not u.get("isAdmin") and not u.get("isBreakGlass"):
+            targets[u["source"]] = u["id"]
+    findings = []
+    for source, uid in targets.items():
+        url = f"/api/v1/admin/users/{uid}"
+        for role, _, _ in ROLES[:-1]:
+            status, _, body = raw(base, "DELETE", url, sessions[role])
+            seen[f"{source}: {role} DELETE"] = f"HTTP {status}"
+            if 200 <= status < 300:
+                findings.append(finding(role, "DELETE", url, status, body, f"{role} deleted a {source} user"))
+        seen[f"{source}: admin DELETE"] = f"HTTP {raw(base, 'DELETE', url, cookie_header(admin))[0]}"
+        seen[f"{source}: admin GET after delete"] = f"HTTP {raw(base, 'GET', url, cookie_header(admin))[0]}"
     return findings, seen
 
 
