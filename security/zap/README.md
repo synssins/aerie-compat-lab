@@ -6,7 +6,7 @@ Every lab run on the Docker host (`harness/run-on-host.sh`, which sets `ZAP=1`) 
 
 - ZAP is the official image `ghcr.io/zaproxy/zaproxy`, version 2.17.0, pinned by digest in [harness/docker-compose.yml](../../harness/docker-compose.yml) (service `zap`, profile `zap`).
 - It runs as part of project `aerie-lab` with `docker compose run --rm`, so each container is removed when its scan ends. The project's teardown removes anything left.
-- ZAP joins only the network `scan`, which is `internal: true`. The lab's aerie joins it as well. From there ZAP reaches the lab's aerie and nothing else: not the live aerie, other containers, the host, the LAN or the internet. ZAP also runs with `-silent`, so it makes no update or callback requests.
+- ZAP joins only the network `scan`, which is `internal: true`. The lab's aerie joins it as well. From there ZAP reaches the lab's aerie and nothing else: not the live aerie, other containers, the host, the LAN or the internet. aerie itself is on internal networks only, so an address ZAP puts into a setting (the AI provider's, for example) cannot take aerie out either; every run proves it (`reports/egress.txt`, harness/README.md). ZAP also runs with `-silent`, so it makes no update or callback requests.
 
 ## What runs
 

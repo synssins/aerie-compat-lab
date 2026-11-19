@@ -1,6 +1,6 @@
 # Starts the aerie image for the commit under test, as its own compose project "aerie-lab".
 #   AERIE_TAG=sha-cd7b0e8 docker compose -p aerie-lab -f harness/docker-compose.yml up -d aerie
-#   AERIE_SETUP_CODE="$(docker compose -p aerie-lab -f harness/docker-compose.yml exec -T aerie cat /app/App_Data/setup-code.txt)" python -I harness/seed.py
+#   AERIE_SETUP_CODE="$(docker compose -p aerie-lab -f harness/docker-compose.yml exec -T aerie cat /app/App_Data/setup-code.txt)" #     docker compose -p aerie-lab -f harness/docker-compose.yml --profile runner run --rm -T -e AERIE_SETUP_CODE runner #     python -I harness/seed.py --base-url http://aerie:8080
 #   docker compose -p aerie-lab -f harness/docker-compose.yml --profile runner down -v
 # The image declares no HEALTHCHECK, so seed.py waits for GET /api/v1/setup/status.
 # The "runner" service (profile runner) is the toolbox run-lab.sh uses, so the host needs only docker:
@@ -12,13 +12,14 @@ services:
     # aerie ends its own process on purpose after a plugin install, removal, enable or disable, or a plugin setting
     # that needs a restart, and relies on the host to start it again.
     restart: unless-stopped
-    ports:
-      - "${AERIE_PORT:-8080}:8080"
+    # No host port and no way out: aerie joins only internal networks, so it reaches the runner, the lab
+    # OIDC provider and ZAP, and nothing else (not the host, the LAN or the internet). run-lab.sh checks this
+    # every run from inside aerie's own network namespace.
     # Optional settings for the image (git-ignored); seeding needs none.
     env_file:
       - path: aerie.env
         required: false
-    networks: [default, scan]
+    networks: [lab, scan]
     volumes:
       # Anonymous volume over the image's data folder: every run starts empty; `down -v` removes it.
       - /app/App_Data
@@ -40,6 +41,8 @@ services:
       HOME: /tmp
       AERIE_SETUP_CODE: ${AERIE_SETUP_CODE:-}
     working_dir: /lab
+    # default: the internet for client generation (specs, Maven, npm); lab: aerie.
+    networks: [default, lab]
     volumes:
       - ..:/lab
 
@@ -61,5 +64,8 @@ services:
       - ../reports/security-zap/work:/zap/wrk
 
 networks:
+  # aerie, the runner and the lab OIDC provider.
+  lab:
+    internal: true
   scan:
     internal: true
