@@ -238,7 +238,8 @@ def sign_in_methods(base, sessions):
             cookies = [c for c in headers.get_all("Set-Cookie") or [] if c.startswith("__Host-kb=") and "=;" not in c[:12]]
             if status >= 500:
                 findings.append(finding(role, "GET", url, status, body, "server error on a plugin sign-in route", "Medium"))
-            if host and host not in ("aerie:8080", "aerie"):
+            # Going to the identity provider (the lab's, at oidc:8443) is how a start works; anything else is off the site.
+            if host and host not in ("aerie:8080", "aerie", "oidc:8443"):
                 findings.append(finding(role, "GET", url, status, loc.encode(), f"redirect off the site to {loc}"))
             # aerie renews the caller's own session cookie on most answers (since 2cf1f9c); only a session for
             # someone else, or any session for an anonymous caller, is a sign-in without a valid state.

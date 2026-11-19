@@ -130,6 +130,8 @@ if [ "$ZAP" = 1 ] && [ "$seed_rc" = 0 ]; then
   dc pull -q zap </dev/null
   mkdir -p reports/security-zap
   if runner python -I security/zap/scan.py prep --harness reports/harness.json --out reports/security-zap; then
+    # Restarts before the ZAP stage (a plugin install) are not the scans' doing: count from here.
+    last_restarts=$(docker inspect -f '{{.RestartCount}}' "$(dc ps -aq aerie </dev/null)" 2>/dev/null || echo 0)
     while read -r role; do
       t0=$(date +%s)
       # aerie restarts itself on purpose (plugin install, enable, disable, failure threshold) and relies on the
