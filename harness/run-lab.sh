@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # Runs the lab in this checkout against one aerie image: starts the image as its own compose project
-# "aerie-lab" (own network, throwaway volume, host port $AERIE_PORT), generates and builds the clients,
+# "aerie-lab" (internal networks, no host port, throwaway volume), generates and builds the clients,
 # seeds aerie and runs the suites inside the "runner" container, writes reports/, and removes every
 # container, network and volume of the project again. Needs only docker (with compose) and curl.
 # Used by run-on-host.sh on the Docker host and by .github/workflows/lab.yml.
 #
 # Usage: bash harness/run-lab.sh [image-tag]          (default tag: latest)
-# Settings (environment): AERIE_PORT (default 18090; never 8080 or 8081), SUITES (default "datacenter/t1 auth"),
+# Settings (environment): SUITES (default "datacenter/t1 auth"),
 #                         ZAP=1 to add the security/zap stage after the suites (security/zap/README.md; default 0)
 #                         OIDC=1 to add the lab OIDC provider and sign in through aerie.signin.oidc (harness/README.md;
 #                         default 1 when the plugin package is in .plugins/, which is not committed)
@@ -14,20 +14,18 @@
 set -euo pipefail
 
 TAG=${1:-${AERIE_TAG:-latest}}
-PORT=${AERIE_PORT:-18090}
 SUITES=${SUITES:-datacenter/t1 auth}  # auth last: it locks an account on purpose
 ZAP=${ZAP:-0}
 PROJECT=aerie-lab
 OIDC_PLUGIN=${OIDC_PLUGIN:-.plugins/aerie.signin.oidc-1.0.0.kbplugin}
 
 [[ "$TAG" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "invalid aerie tag: '$TAG'" >&2; exit 1; }
-[[ "$PORT" =~ ^[0-9]+$ ]] && [ "$PORT" != 8080 ] && [ "$PORT" != 8081 ] || { echo "refusing host port '$PORT'" >&2; exit 1; }
 
 say() { echo "== $*"; }
 cd "$(dirname "$0")/.."
 echo "lab commit $(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
 
-export AERIE_TAG=$TAG AERIE_PORT=$PORT LAB_UID=$(id -u) LAB_GID=$(id -g)
+export AERIE_TAG=$TAG LAB_UID=$(id -u) LAB_GID=$(id -g)
 OIDC=${OIDC:-$([ -f "$OIDC_PLUGIN" ] && echo 1 || echo 0)}
 compose_files=(-f harness/docker-compose.yml)
 if [ "$OIDC" = 1 ]; then
@@ -56,10 +54,6 @@ trap teardown EXIT
 
 # A clean slate: an aborted earlier run may have left the project behind.
 dc down -v --remove-orphans </dev/null >/dev/null 2>&1 || true
-if (ss -ltn 2>/dev/null || netstat -ltn 2>/dev/null) | awk '{print $4}' | grep -qE "[:.]$PORT\$"; then
-  echo "host port $PORT is in use; set AERIE_PORT to a free one" >&2
-  exit 1
-fi
 rm -rf reports && mkdir -p reports
 
 say "runner image"
@@ -86,12 +80,28 @@ if [ "$OIDC" = 1 ]; then
   dc up -d oidc </dev/null
 fi
 
-say "start aerie on host port $PORT"
+say "start aerie (internal networks only)"
 dc up -d aerie </dev/null
-for _ in $(seq 1 90); do
-  curl -sf -o /dev/null "http://localhost:$PORT/api/v1/setup/status" && break
-  sleep 2
-done
+runner python -I -c "import sys; sys.path.insert(0, 'harness'); from seed import wait_until_up; wait_until_up('http://aerie:8080', '/api/v1/setup/status', 180)" || true
+
+# aerie must not reach the internet during the run. Proof from inside aerie's own network namespace: every
+# outside address fails, while aerie itself answers on localhost (the control). Not blocked: no ZAP, exit 1.
+say "egress check"
+egress=blocked
+aerie_cid=$(dc ps -q aerie </dev/null)
+probe() {
+  docker run --rm --label "com.docker.compose.project=$PROJECT" --network "container:$aerie_cid"     --user "$LAB_UID:$LAB_GID" aerie-lab-runner:local curl -s -o /dev/null -m 10 "$1" </dev/null
+}
+{
+  for url in https://www.google.com/ http://www.google.com/ http://1.1.1.1/ https://ghcr.io/; do
+    if probe "$url"; then echo "OPEN: $url answered"; egress=open; else echo "blocked: $url (curl exit $?)"; fi
+  done
+  if probe http://localhost:8080/api/v1/setup/status; then echo "control: aerie answers on localhost:8080"
+  else echo "control FAILED: no answer from aerie on localhost:8080"; [ "$egress" = open ] || egress=error; fi
+} > reports/egress.txt 2>&1
+cat reports/egress.txt
+echo "egress: $egress"
+[ "$egress" = blocked ] || { echo "aerie's egress is not proven blocked: the security/zap stage is skipped" >&2; ZAP=0; }
 # The remote setup code only exists inside this run's throwaway container; it is never written to disk.
 AERIE_SETUP_CODE=$(dc exec -T aerie cat /app/App_Data/setup-code.txt </dev/null 2>/dev/null || true)
 export AERIE_SETUP_CODE
@@ -165,9 +175,9 @@ if [ "$ZAP" = 1 ] && [ "$seed_rc" = 0 ]; then
 fi
 runner python -I harness/redact.py reports/harness.json
 cat >reports/run.json <<EOF
-{"tag": "$TAG", "digest": "$digest", "lab_commit": "$(git rev-parse HEAD 2>/dev/null || echo unknown)", "host_port": $PORT,
+{"tag": "$TAG", "digest": "$digest", "lab_commit": "$(git rev-parse HEAD 2>/dev/null || echo unknown)", "egress": "$egress",
  "generate_exit": $gen_rc, "seed_exit": $seed_rc, "suites_exit": $suite_rc, "audit_scan_hits": $secrets_in_log,
  "oidc_exit": "$oidc_rc", "zap_gate": "$zap_gate", "zap_seconds": $zap_seconds, "finished": "$(date -u +%FT%TZ)"}
 EOF
 cat reports/run.json
-[ "$seed_rc" = 0 ] && [ "$gen_rc" = 0 ]
+[ "$seed_rc" = 0 ] && [ "$gen_rc" = 0 ] && [ "$egress" = blocked ]

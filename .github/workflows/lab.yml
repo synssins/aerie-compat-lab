@@ -60,7 +60,6 @@ jobs:
     timeout-minutes: 60
     env:
       AERIE_TAG: ${{ needs.check.outputs.tag }}
-      AERIE_PORT: "18090"
     steps:
       - uses: actions/checkout@v4
 

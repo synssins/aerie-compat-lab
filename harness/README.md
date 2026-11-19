@@ -4,7 +4,7 @@ Starts the aerie container image for the commit under test (`ghcr.io/synssins/ae
 
 | File | What |
 |---|---|
-| `docker-compose.yml` | Compose project `aerie-lab`: the image on `AERIE_PORT` with an empty throwaway data volume, plus the `runner` toolbox (profile `runner`: Python 3.12 with the suite dependencies, JDK 17 with Maven, Node with npm) |
+| `docker-compose.yml` | Compose project `aerie-lab`: the image with an empty throwaway data volume on the internal networks `lab` and `scan` only (no host port, no way to the host, the LAN or the internet), plus the `runner` toolbox (profile `runner`: Python 3.12 with the suite dependencies, JDK 17 with Maven, Node with npm), which joins `lab` and the default network for client generation |
 | `seed.json` | The fixture: users, a group, spaces `LAB`, `PRIV` and `LABW` (where the T1 write scenarios make their pages), 14 pages, a personal access token and an OAuth client |
 | `seed.py` | Waits for aerie, seeds `seed.json` through `/api/v1`, writes the hand-off file `reports/harness.json` |
 | `redact.py` | Blanks passwords, sign-in code keys and tokens in the hand-off file before it is kept |
@@ -39,11 +39,13 @@ docker compose -p aerie-lab -f harness/docker-compose.yml --profile runner down 
 
 ## Running on a Docker host
 
-`run-on-host.sh` needs only docker, git and curl on the host. It clones or updates the lab under `~/aerie-compat-lab`, starts the image as compose project `aerie-lab` on host port 18090, seeds it, runs `clients/generate.sh` and the suites in the `runner` container, writes `reports/` (matrix, failures, generation and aerie logs, redacted hand-off, `run.json` with the image digest), and removes the project's containers, networks and volume. After the suites it runs the `security/zap` stage, a full OWASP ZAP scan of the lab's aerie under every role on an internal network ([security/zap/README.md](../security/zap/README.md)); `ZAP=0` skips it, and `run-lab.sh` alone (CI) skips it unless `ZAP=1`. It never uses host ports 8080 or 8081 and touches nothing outside its project and its checkout.
+`run-on-host.sh` needs only docker, git and curl on the host. It clones or updates the lab under `~/aerie-compat-lab`, starts the image as compose project `aerie-lab` with no host port, checks that aerie cannot reach the internet (below), seeds it, runs `clients/generate.sh` and the suites in the `runner` container, writes `reports/` (matrix, failures, generation and aerie logs, redacted hand-off, `run.json` with the image digest), and removes the project's containers, networks and volume. After the suites it runs the `security/zap` stage, a full OWASP ZAP scan of the lab's aerie under every role on an internal network ([security/zap/README.md](../security/zap/README.md)); `ZAP=0` skips it, and `run-lab.sh` alone (CI) skips it unless `ZAP=1`. It publishes no host port and touches nothing outside its project and its checkout.
+
+**Egress check.** aerie joins only internal networks. After it starts, `run-lab.sh` runs `curl` from inside aerie's own network namespace (`--network container:<aerie>`, runner image) against `https://www.google.com/`, `http://www.google.com/`, `http://1.1.1.1/` and `https://ghcr.io/`. Every one must fail, and aerie must answer on `localhost:8080` as the control. The result is in `reports/egress.txt` and `run.json` (`"egress": "blocked"`). Anything else skips the security/zap stage and makes the run exit 1. The image pull runs on the host's docker daemon and is not affected.
 
 ```bash
 ssh docker-host 'bash -s -- latest' < harness/run-on-host.sh
-ssh docker-host 'LAB_REF=my-branch AERIE_PORT=18091 bash -s -- sha-cd7b0e8' < harness/run-on-host.sh
+ssh docker-host 'LAB_REF=my-branch bash -s -- sha-cd7b0e8' < harness/run-on-host.sh
 ```
 
 `host-timer.sh install` (run on the host from a checkout) copies itself to `~/aerie-compat-lab/.timer/` and adds one line to the host user's crontab: every 30 minutes, under a lock, it reads the digest of `aerie:latest` anonymously and runs `run-on-host.sh` at `LAB_REF` (default `main`) when that digest has not been tested. Each run's `run.json` and matrices are kept in `.timer/runs/<UTC time>/`, the log in `.timer/log`. `host-timer.sh remove` takes the line out. No sudo and no system unit: it is the fallback for GitHub's scheduled trigger, which had not fired once on this repository.

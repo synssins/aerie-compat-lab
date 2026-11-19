@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # Runs the whole lab on a Docker host that has docker, git and curl but no java or node: clones or
 # updates the lab under $LAB_DIR at $LAB_REF, then runs harness/run-lab.sh there (compose project
-# "aerie-lab", host port $AERIE_PORT, reports in $LAB_DIR/reports/, project removed afterwards).
+# "aerie-lab" on internal networks with no host port, reports in $LAB_DIR/reports/, project removed afterwards).
 #
 # Usage on the host:         bash run-on-host.sh [image-tag]          (default tag: latest)
 # From a workstation:        ssh docker-host 'bash -s -- latest' < harness/run-on-host.sh
-# Settings (environment):    AERIE_PORT (default 18090; never 8080 or 8081), LAB_DIR (default ~/aerie-compat-lab),
+# Settings (environment):    LAB_DIR (default ~/aerie-compat-lab),
 #                            LAB_REPO, LAB_REF (branch to test, default main), SUITES (default "datacenter/t1 auth"),
 #                            ZAP (default 1 here: the security/zap stage scans every image, security/zap/README.md)
 # Exit code: 0 when the harness worked (suite failures are results, not harness errors), 1 otherwise.
